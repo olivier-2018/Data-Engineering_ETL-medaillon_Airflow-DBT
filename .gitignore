@@ -1,0 +1,49 @@
+# python cache
+*.pyc
+__pycache__/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# IDE
+*.iml
+
+# Services storage
+data-*/
+
+# secrets
+.env.local
+.env
+
+# logs and tmp files
+*.log
+TODO.md
+TODO_*
+
+# uv package manager
+.uv/
+
+# dbt - vendored packages are a regenerable dependency (see dbt/packages.yml),
+# fetched via `dbt deps`, same idea as node_modules - not our code.
+dbt/dbt_packages/
+dbt/target/
+dbt/logs/
+
+# Virtual environments
+*.venv/
+venv/
+env/
+
+# Claude Code
+.claude/
+logs/
+PROGRESS.md

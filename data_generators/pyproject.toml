@@ -1,0 +1,15 @@
+[project]
+name = "iot-data-generator"
+version = "0.1.0"
+description = "Synthetic Biel-warehouse logistics event generator, publishing directly to Kafka"
+requires-python = ">=3.12"
+dependencies = [
+    # kafka-python==2.0.2's vendored six.moves shim is broken under Python
+    # 3.12 (confirmed by testing) - confluent-kafka is actively maintained
+    # and has prebuilt wheels for 3.12.
+    "confluent-kafka==2.15.0",
+    "pyyaml==6.0.2",
+]
+
+[tool.uv]
+package = false

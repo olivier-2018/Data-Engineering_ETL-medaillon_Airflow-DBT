@@ -1,0 +1,47 @@
+version: 2
+
+sources:
+  - name: silver
+    schema: silver
+    tables:
+      - name: customers_current
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 30, period: minute}
+          error_after: {count: 60, period: minute}
+      - name: products_current
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 30, period: minute}
+          error_after: {count: 60, period: minute}
+      - name: sales_orders_current
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 20, period: minute}
+          error_after: {count: 40, period: minute}
+      - name: payments_current
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 20, period: minute}
+          error_after: {count: 40, period: minute}
+      - name: inventory_current
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 20, period: minute}
+          error_after: {count: 40, period: minute}
+      - name: truck_positions_current
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 15, period: minute}
+  - name: iot
+    schema: iot
+    tables:
+      - name: weather_observations
+      - name: truck_position_events
+        description: >
+          Bronze event log, queried directly (not via silver) by
+          fact_shipments for full dispatch->delivery timing - silver's
+          truck_positions_current only retains the latest position per
+          shipment, not the first-seen timestamp needed for
+          time_to_destination.

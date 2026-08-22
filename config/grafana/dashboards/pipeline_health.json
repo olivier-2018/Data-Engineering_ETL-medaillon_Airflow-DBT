@@ -1,0 +1,54 @@
+{
+  "title": "Pipeline Health",
+  "uid": "iot-pipeline-health",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "tags": ["iot-logistics", "ops"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Silver watermark lag per domain",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT table_name, last_processed_ingested_at, extract(epoch from (now() - last_processed_ingested_at)) AS lag_seconds FROM control.watermarks ORDER BY lag_seconds DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Error rows (last 15 min) per domain",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT 'customers' AS domain, count(*) FROM silver.error_customers WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'products', count(*) FROM silver.error_products WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'sales_orders', count(*) FROM silver.error_sales_orders WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'payments', count(*) FROM silver.error_payments WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'inventory_changes', count(*) FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'truck_positions', count(*) FROM silver.error_truck_positions WHERE rejected_at > now() - interval '15 minutes'",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Kafka bronze ingestion volume (last 6h)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('minute', ingested_at) AS time, count(*) AS orders FROM iot.sales_order_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

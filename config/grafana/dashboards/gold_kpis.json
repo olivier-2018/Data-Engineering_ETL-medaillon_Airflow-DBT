@@ -1,0 +1,54 @@
+{
+  "title": "Gold KPIs",
+  "uid": "iot-gold-kpis",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "tags": ["iot-logistics", "business"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "barchart",
+      "title": "Revenue by destination country (last 24h)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dc.country_name, sum(fso.order_amount) AS revenue FROM gold.fact_sales_orders fso JOIN gold.fact_shipments fs ON fs.order_id = fso.order_id JOIN gold.dim_destination_country dc ON dc.country_code = fs.destination_country_key WHERE fso.updated_at > now() - interval '24 hours' GROUP BY dc.country_name ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "On-time delivery rate (avg time to destination, hours)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT avg(time_to_destination_seconds) / 3600.0 AS avg_hours FROM gold.fact_shipments WHERE is_delivered",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Products below restock threshold",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT p.name, f.current_stock, f.initial_stock FROM gold.fact_inventory_snapshot f JOIN gold.dim_product p ON p.product_id = f.product_id AND p.dbt_valid_to IS NULL WHERE f.is_below_restock_threshold AND f.snapshot_date = current_date",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: dim_datetime
+    columns:
+      - name: date_key
+        data_tests: [not_null, unique]
+
+  - name: dim_customer
+    columns:
+      - name: customer_key
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests: [not_null]
+      - name: country
+        data_tests:
+          - accepted_values:
+              values: ['CH', 'FR', 'DE', 'IT']
+
+  - name: dim_product
+    columns:
+      - name: product_key
+        data_tests: [not_null, unique]
+      - name: product_id
+        data_tests: [not_null]
+
+  - name: dim_truck
+    columns:
+      - name: truck_id
+        data_tests: [not_null, unique]
+
+  - name: dim_destination_country
+    columns:
+      - name: country_code
+        data_tests: [not_null, unique]

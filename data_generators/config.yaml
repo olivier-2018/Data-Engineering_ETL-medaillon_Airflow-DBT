@@ -1,0 +1,85 @@
+# Single source of truth for every generator-tunable parameter.
+# Secrets (OPENWEATHERMAP_API_KEY, DB passwords) live in .env, not here.
+# See docs/DEVELOPMENT.md for the full field-by-field reference.
+
+warehouse:
+  origin_name: "Biel, Switzerland"
+  origin_lat: 47.14
+  origin_lon: 7.24
+
+products:
+  num_products: 100
+  initial_stock_min: 200
+  initial_stock_max: 1000
+  restock_threshold_pct: 20      # trigger for restock_check.py
+  restock_target_pct: 100        # replenish back up to this % of initial_stock
+  attribute_update_rate_per_hour: 2   # price/category changes -> product SCD2
+  categories:
+    - Electronics
+    - Home & Kitchen
+    - Sports & Outdoors
+    - Toys & Games
+    - Tools & Hardware
+    - Health & Beauty
+    - Office Supplies
+    - Automotive
+
+customers:
+  num_customers: 500
+  countries: [CH, FR, DE, IT]
+  attribute_update_rate_per_hour: 5   # address/segment changes -> customer SCD2
+
+orders:
+  target_concurrent_orders: 50
+  order_arrival_rate_per_minute: 6     # controls how fast new orders appear
+  cancellation_probability: 0.05
+
+payments:
+  failure_probability: 0.02
+  processing_delay_seconds:
+    min: 5
+    max: 60
+
+trucks:
+  num_trucks: 12                       # hard ceiling on concurrent in_transit shipments
+  avg_speed_kmh: 80                    # drives simulated time_to_destination
+  position_ping_interval_seconds: 15   # controls live-map update frequency
+
+# Bounding boxes used to pick a random delivery destination per country.
+zones:
+  CH: {lat_min: 45.8, lat_max: 47.8, lon_min: 5.9,  lon_max: 10.5}
+  FR: {lat_min: 41.3, lat_max: 51.1, lon_min: -5.1, lon_max: 9.6}
+  DE: {lat_min: 47.3, lat_max: 55.1, lon_min: 5.9,  lon_max: 15.0}
+  IT: {lat_min: 36.6, lat_max: 47.1, lon_min: 6.6,  lon_max: 18.5}
+
+# Fixed weather-observation locations (consumed by weather_enrichment_dag, not
+# the generator - kept here since it's the same kind of "scenario sizing" param).
+weather:
+  poll_interval_hours: 1
+  locations:
+    - name: "Biel"
+      lat: 47.14
+      lon: 7.24
+    - name: "Bern"
+      lat: 46.95
+      lon: 7.45
+    - name: "Paris"
+      lat: 48.8566
+      lon: 2.3522
+    - name: "Berlin"
+      lat: 52.52
+      lon: 13.405
+    - name: "Milan"
+      lat: 45.4642
+      lon: 9.19
+
+kafka:
+  topics:
+    customer_events: iot.customer_events
+    product_events: iot.product_events
+    order_events: iot.sales_order_events
+    payment_events: iot.payment_events
+    inventory_changes: iot.inventory_changes
+    truck_position_events: iot.truck_position_events
+  partitions_per_topic: 2
+  replication_factor: 1

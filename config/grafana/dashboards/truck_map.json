@@ -1,0 +1,56 @@
+{
+  "title": "Live Truck Map",
+  "uid": "iot-truck-map",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "tags": ["iot-logistics", "live"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "geomap",
+      "title": "Truck positions (live)",
+      "gridPos": {"h": 16, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT truck_id, shipment_id, order_id, shipment_status, destination_country, ST_Y(geog::geometry) AS latitude, ST_X(geog::geometry) AS longitude, updated_at FROM silver.truck_positions_current WHERE shipment_status != 'delivered'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "view": {"id": "fit"},
+        "layers": [
+          {
+            "type": "markers",
+            "location": {"mode": "coords", "latitude": "latitude", "longitude": "longitude"},
+            "config": {
+              "style": {
+                "color": {"field": "shipment_status", "fixed": "dark-blue"},
+                "size": {"fixed": 8}
+              }
+            }
+          }
+        ],
+        "controls": {"showZoom": true, "mouseWheelZoom": true}
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Active shipments",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT truck_id, shipment_id, order_id, shipment_status, destination_country, updated_at FROM silver.truck_positions_current ORDER BY updated_at DESC LIMIT 50",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
