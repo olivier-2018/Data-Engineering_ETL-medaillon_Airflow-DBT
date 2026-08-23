@@ -41,7 +41,8 @@ fi
 # Creating data folders
 
 echo "Creating data-* host directories ..."
-mkdir -p data-postgres data-airflow-postgres data-airflow-logs data-kafka \
+mkdir -p data-postgres data-airflow-postgres data-airflow-logs \
+         data-kafka/kafka-logs data-kafka/secrets data-kafka/config data-kafka/data \
          data-spark-logs data-spark-master data-spark-worker-1 data-spark-worker-2 \
          data-spark-checkpoints data-grafana data-loki
 
