@@ -105,7 +105,11 @@ above if login stops working after a reset.
    docker compose exec airflow-api-server airflow dags list
    docker compose exec airflow-api-server airflow dags list-import-errors  # should show nothing
    ```
-   All DAGs start **paused** (Airflow's default) — unpause the ones you want running:
+   Every DAG starts **unpaused** automatically the moment it's first registered
+   (`AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false` — overrides Airflow's own
+   default, which is paused-by-default). This only applies at first registration,
+   not retroactively — if a DAG was already registered while paused (e.g. before
+   this setting existed), unpause it once manually:
    ```bash
    docker compose exec airflow-api-server airflow dags unpause bronze_ingestion_dag
    # ... one per DAG, or via the UI at http://localhost:8090

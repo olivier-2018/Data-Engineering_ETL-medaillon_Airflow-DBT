@@ -70,7 +70,7 @@ Once `scripts/start.sh` finishes, these are the web UIs available:
 | UI | URL | What it's for |
 |---|---|---|
 | **Grafana** | http://localhost:3000 | The main dashboard UI — see below. Login with `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD` from `.env`. |
-| Airflow | http://localhost:8090 | DAG runs, task logs, manually trigger/unpause DAGs (all DAGs start paused by default). Login is `admin` + an auto-generated password, not from `.env` — see [`docs/SETUP.md`](docs/SETUP.md#logging-into-the-airflow-ui). |
+| Airflow | http://localhost:8090 | DAG runs, task logs — every DAG starts unpaused automatically (`AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false`). Login is `admin` + an auto-generated password, not from `.env` — see [`docs/SETUP.md`](docs/SETUP.md#logging-into-the-airflow-ui). |
 | Kafka UI | http://localhost:8089 | Browse topics/partitions, tail live messages, inspect consumer groups — no login (auth disabled for this local demo). |
 | Spark Master | http://localhost:8080 | Cluster state — registered workers, running/completed applications, cores/memory in use. |
 | Spark Worker 1 / 2 | http://localhost:8081 / http://localhost:8082 | Per-worker executor detail. |

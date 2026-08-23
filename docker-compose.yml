@@ -398,6 +398,14 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__PARALLELISM: 3
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
+      # Airflow's own default is to create every newly-discovered DAG paused,
+      # requiring a manual unpause per DAG. This project wants every DAG
+      # running the moment Airflow starts, so every new DAG is created
+      # already unpaused instead. Only affects DAGs at the moment they're
+      # first registered in the metadata DB - an already-registered DAG's
+      # paused/unpaused state is a separate, persisted toggle this setting
+      # doesn't touch retroactively.
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       # Every task runs in a subprocess that talks to this URL via the Task SDK
       # (Airflow 3's "Execution API"), served by airflow-api-server at /execution/.
       # Left unset, it defaults to localhost - unreachable from airflow-scheduler's
