@@ -26,9 +26,22 @@ services:
       - ./data-kafka:/tmp/kraft-combined-logs
     networks:
       - airflow_network
-    mem_limit: 1536m
-    memswap_limit: 1536m
-    cpus: '1.0'
+    # mem_reservation (soft target, ~matches KAFKA_HEAP_OPTS's 768m heap) vs
+    # mem_limit (hard ceiling, OOM-killed if exceeded) - 1GB hard cap leaves
+    # ~256m of headroom above the JVM heap for metaspace/direct buffers/page
+    # cache, rather than pinning the hard limit to the exact heap size (which
+    # would leave zero room for JVM/OS overhead and risk OOM under any real
+    # load, per this project's own earlier OOM findings elsewhere).
+    mem_reservation: 768m
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    # Measured via docker stats under real generator load: steady-state is
+    # 2.6-5.2% CPU, with occasional brief bursts to ~80% (log-segment
+    # flushes) - trimmed from 1.0 given this project's genuinely low data
+    # volume. A burst exceeding 0.5 cores gets CFS-throttled (the flush just
+    # takes a bit longer), not dropped/crashed - acceptable at this
+    # throughput; revisit if flush latency ever becomes visible.
+    cpus: '0.5'
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 15s
