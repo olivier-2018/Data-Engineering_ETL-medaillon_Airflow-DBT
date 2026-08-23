@@ -108,3 +108,13 @@ of thing that recurs in similar setups:
 - Grafana dashboard JSON files referenced a datasource by a hardcoded `uid` that was never actually pinned in
   the datasource provisioning config, so Grafana auto-generated a random one that never matched — every panel
   would have failed with "Data source not found" in a real browser. Fixed by pinning explicit `uid:` values.
+- **Kafka's data was never actually persisted, despite a bind mount being configured** — `docker-compose.yml`
+  mounted `./data-kafka:/tmp/kraft-combined-logs`, but the `apache/kafka:3.7.0` image's real, effective
+  `log.dirs` is `/tmp/kafka-logs` (confirmed by inspecting the live container's actual generated config and
+  process, not the misleading unused template at `/etc/kafka/docker/server.properties`). Every container
+  recreate silently rebuilt a brand-new empty KRaft cluster in the container's ephemeral filesystem, with no
+  error — surfacing later as batch ingestion jobs crashing on a stale `control.kafka_offsets` watermark that
+  pointed at a "cluster" that no longer existed. Fixed by correcting the mount target; verified by fully
+  removing and recreating the container and confirming topic offsets survived (a topic's message count carried
+  forward across the recreate rather than resetting to 0). This is the kind of bug that's easy to miss because
+  everything looks fine within a single container's lifetime — only a recreate exposes it.

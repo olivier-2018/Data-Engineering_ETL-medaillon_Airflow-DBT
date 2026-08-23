@@ -21,6 +21,7 @@ import logging
 import os
 
 import psycopg2
+from py4j.protocol import Py4JJavaError
 from psycopg2.extras import execute_values
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, from_json
@@ -65,6 +66,19 @@ def get_starting_offsets_json(topic: str) -> str:
 
     offsets = {str(partition): offset for partition, offset in rows}
     return json.dumps({topic: offsets})
+
+
+def reset_offsets(topic: str) -> None:
+    """Drops the stored watermark for a topic so the next run's
+    get_starting_offsets_json() falls back to "earliest", same as a
+    never-before-ingested topic. Used when the stored offset turns out to be
+    stale (ahead of what the topic can actually serve - e.g. retention
+    expired the segments it pointed at, or the topic was reset/recreated
+    since the last run)."""
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM control.kafka_offsets WHERE topic = %s", (topic,))
+        conn.commit()
 
 
 def update_offsets(topic: str, kafka_df: DataFrame) -> None:
@@ -147,7 +161,32 @@ def run_ingestion(
         .load()
     )
 
-    if kafka_df.rdd.isEmpty():
+    try:
+        is_empty = kafka_df.rdd.isEmpty()
+    except Py4JJavaError as exc:
+        # Spark's Kafka batch source doesn't validate startingOffsets against
+        # the topic's actual available range up front - it only surfaces this
+        # as a hard AssertionError once an action runs. This specific message
+        # means our stored watermark points past what the topic can currently
+        # serve (e.g. retention expired those segments, or the topic was
+        # reset/recreated since the last run) - not a real code bug, and not
+        # the ordinary "no new messages" case (which returns cleanly above).
+        # Confirmed by testing: this is exactly what happens after Kafka
+        # retention/topic state changes underneath an existing watermark.
+        if "is after the ending offset" in str(exc):
+            logger.warning(
+                "Stored offset watermark for topic=%s is stale (points past what the "
+                "topic can currently serve). Resetting it and skipping this run - the "
+                "next run re-ingests from the earliest available offset, which is safe "
+                "since bronze appends are idempotent (ON CONFLICT DO NOTHING).",
+                topic,
+            )
+            reset_offsets(topic)
+            spark.stop()
+            return
+        raise
+
+    if is_empty:
         logger.info("No new messages on topic=%s", topic)
         spark.stop()
         return

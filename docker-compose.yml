@@ -22,8 +22,27 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_HEAP_OPTS: "-Xmx768m -Xms768m"
+      # Broker-wide default retention, down from Kafka's own stock default
+      # (7 days/unlimited) - Kafka here is just the pipeline's ingestion entry
+      # point, not long-term storage (bronze is the durable, append-only
+      # source of truth), so 24h is generous headroom, not a tight fit.
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_RETENTION_BYTES: -1
     volumes:
-      - ./data-kafka:/tmp/kraft-combined-logs
+      # /tmp/kafka-logs, NOT /tmp/kraft-combined-logs: confirmed by direct
+      # inspection (docker inspect + find -newer inside the running
+      # container) that this image's real, effective log.dirs is
+      # /tmp/kafka-logs - /etc/kafka/docker/server.properties (a template,
+      # not the actual generated config) misleadingly shows
+      # "log.dirs=/tmp/kraft-combined-logs", but the real config actually
+      # used by the running broker (/opt/kafka/config/server.properties) has
+      # no log.dirs override at all, so Kafka falls back to its own
+      # hardcoded default. Mounting the wrong path meant every container
+      # recreate silently rebuilt a brand-new empty KRaft cluster with zero
+      # error - this is what caused the "stale offset watermark" bug
+      # (control.kafka_offsets remembered offsets from a "cluster" that no
+      # longer existed after any recreate).
+      - ./data-kafka:/tmp/kafka-logs
     networks:
       - airflow_network
     # mem_reservation (soft target, ~matches KAFKA_HEAP_OPTS's 768m heap) vs

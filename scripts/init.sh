@@ -50,9 +50,20 @@ mkdir -p data-postgres data-airflow-postgres data-airflow-logs data-kafka \
 # Freshly-created host directory is owner-only-writable by default, which causes PermissionErrors 
 # World-writable is the simplest fix that works regardless of which container's uid/gid ends up writing here.
 # Note: acceptable for a local, single-user demo ONLY (no Production).
-chmod 777 data-airflow-logs data-spark-logs data-spark-master \
+chmod 777 data-airflow-logs data-kafka data-spark-logs data-spark-master \
           data-spark-worker-1 data-spark-worker-2 data-spark-checkpoints \
           data-grafana data-loki dbt
+# data-kafka specifically: Kafka's official image runs directly as a fixed
+# non-root uid (appuser, uid 1000) with no self-healing entrypoint (unlike
+# the Postgres images used elsewhere in this project, which start as root
+# and chown their own data dir). Confirmed by testing: when this directory
+# was missing from this chmod list, it silently stayed root-owned/755 with
+# nothing kafka's appuser could write - every container recreate re-bootstrapped
+# a brand-new EMPTY Kafka cluster with no error, silently discarding all
+# prior topic data. Not caught earlier because within one continuous
+# container lifetime everything looks fine; only a recreate exposes it.
+# data-postgres/data-airflow-postgres are deliberately left at their mkdir -p
+# default (not world-writable) - those images DO self-heal correctly.
 # Recursive: a non-recursive chmod on ./dbt alone doesn't touch pre-existing
 # subdirectories/files from an earlier host-side `dbt` run (e.g. dbt/logs/,
 # dbt/target/) 

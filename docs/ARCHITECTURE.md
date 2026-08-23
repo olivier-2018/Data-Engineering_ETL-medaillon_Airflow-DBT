@@ -148,3 +148,9 @@ goal, not incidental.
 - **`docker exec`/`kill` vs. crash semantics differ.** `restart: unless-stopped` does **not** bring a container
   back after an explicit `docker stop`/`kill` (Docker treats that as intentional) — only after the container's
   own process exits unexpectedly. Confirmed directly by testing both cases.
+- **A bind mount to the "obviously right" path doesn't guarantee persistence.** Kafka's data directory silently
+  never persisted for most of this project's development, despite `./data-kafka` being bind-mounted, because the
+  mount target didn't match this specific image's real effective `log.dirs` (see
+  [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) for the full story). The general lesson: verify a stateful container's
+  actual runtime config/process, not just a plausible-looking path from documentation or a template file —
+  everything can look correct within one container's lifetime and only fail across a recreate.

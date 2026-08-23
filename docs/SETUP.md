@@ -199,3 +199,23 @@ Real issues hit and fixed during development — if you see one of these, here's
   `./dbt` must be recursive — a non-recursive `chmod 777 dbt` doesn't touch pre-existing subdirectories from an
   earlier host-side `dbt` run (`dbt/logs/`, `dbt/target/`), which stay unwritable by the container's `airflow`
   user. Re-run `scripts/init.sh` (now recursive) or `chmod -R 777 dbt` directly.
+- **Kafka topic data silently resets to offset 0 on every container recreate, even though `./data-kafka` is
+  bind-mounted** — the single most disruptive bug found in this project, because it produced no error at all:
+  every batch ingestion job would eventually fail with `AssertionError: Beginning offset N is after the ending
+  offset 0` (a stale `control.kafka_offsets` watermark pointing past a "cluster" that no longer exists), which
+  looked like a data-quality/watermark bug but was actually a wrong bind-mount target. Root cause, confirmed by
+  directly inspecting the running container (`docker inspect`, `find -newer`, `/proc/1/cmdline`): the
+  `apache/kafka:3.7.0` image's *actual* effective `log.dirs` is `/tmp/kafka-logs`, not `/tmp/kraft-combined-logs`
+  — the latter is only what an unused template file (`/etc/kafka/docker/server.properties`) shows, not what the
+  real generated config (`/opt/kafka/config/server.properties`) or the running broker uses. Every container
+  recreate was silently bootstrapping a brand-new empty KRaft cluster in the container's own ephemeral
+  filesystem. Fixed by pointing the bind mount at the real path (`./data-kafka:/tmp/kafka-logs`); verified by
+  fully removing and recreating the `kafka` container and confirming topic offsets survived intact. Separately,
+  `data-kafka` was also missing from `scripts/init.sh`'s permission-fixing chmod list (Kafka's image doesn't
+  self-heal ownership the way the Postgres images here do) — fixed too, though it was masked by the mount-path
+  bug the whole time (nothing was being written to the mounted path regardless of its permissions).
+- **A batch ingestion job's stored Kafka offset watermark is stale** (points past what the topic can currently
+  serve — e.g. after the bug above, or genuine retention expiry): `shared_ingestion_utils.py`'s `run_ingestion()`
+  catches this specific case (`Py4JJavaError` containing `"is after the ending offset"`), logs a warning, deletes
+  the stale `control.kafka_offsets` row, and skips cleanly — the next run re-ingests from `earliest`, which is
+  safe since bronze appends are idempotent (`ON CONFLICT DO NOTHING`).
