@@ -4,11 +4,15 @@ A local, Docker-based demo to showcase a medallion (bronze/silver/gold) data pip
 warehouse-and-delivery scenario: a resale warehouse in **Biel, Switzerland**, selling 100 products online with
 fast delivery across Switzerland, France, Germany, and Italy.
 
-Synthetic order/payment/inventory/truck-GPS events flow through **Kafka**, get processed by **Apache Spark**
-(one persistent Structured Streaming job for live truck tracking, everything else as periodic incremental batch),
-land in a **TimescaleDB + PostGIS** Postgres instance across bronze/silver/gold schemas, get transformed
-silver→gold by **dbt**, and the whole thing is orchestrated by **Airflow 3**. **Grafana** (+ Loki for logs)
-provides live dashboards, including a truck-position map.
+Synthetic order/payment/inventory/truck-GPS events flow through **Kafka** and get processed by **Apache Spark** into the bronze layer using:  
+- a **persistent Structured Streaming** job for live truck tracking, and  
+- periodic **incremental batches** for customer, inventory, orders, payments, and products data.  
+
+
+Data is stored in a **TimescaleDB + PostGIS** Postgres instance across bronze/silver/gold schemas, get transformed
+silver→gold by **dbt**, and overall orchestrated by **Airflow 3**.  
+
+**Grafana** and **Loki** (for logs) provides live dashboards, including a truck-position map.  
 
 This project was created to showcase Airflow 3, dbt, and Spark hands-on — architecture choices favor demonstrating each tool's real capabilities (genuine Structured Streaming where it matters, genuine incremental batch where it doesn't, genuine dbt SCD2 snapshots) over minimizing moving parts.
 
@@ -17,15 +21,16 @@ This project was created to showcase Airflow 3, dbt, and Spark hands-on — arch
 ```
 Kafka (KRaft)
   ├─ truck_position_events ──► Spark Structured Streaming ──► bronze (hypertable) + silver "current position"
+  │
   └─ 5 other domains        ──► Spark periodic batch        ──► bronze (hypertables + plain tables)
                                                                         │
                                                               Spark incremental batch (watermarked)
                                                                         ▼
-                                                                  silver (validated, deduplicated)
+                                                                silver (validated, deduplicated)
                                                                         │
-                                                                     dbt (snapshot → run → test)
+                                                                dbt (snapshot → run → test)
                                                                         ▼
-                                                                  gold (star schema, SCD2 dimensions)
+                                                              gold (star schema, SCD2 dimensions)
 
 OpenWeatherMap ──► Airflow (hourly pull, not Spark) ──► iot.weather_observations (hypertable)
 

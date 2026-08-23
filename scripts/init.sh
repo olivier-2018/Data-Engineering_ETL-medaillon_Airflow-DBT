@@ -13,6 +13,7 @@ else
 fi
 
 # Generate a Fernet key if the placeholder is still empty.
+# Fernet key: a URL‑safe Base64‑encoded 32‑byte key for both data encryption and decryption using symmetric authenticated cryptography
 if grep -q '^AIRFLOW_FERNET_KEY=$' .env 2>/dev/null; then
     echo "Generating AIRFLOW_FERNET_KEY ..."
     FERNET_KEY=$(python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
@@ -21,10 +22,9 @@ if grep -q '^AIRFLOW_FERNET_KEY=$' .env 2>/dev/null; then
     rm -f .env.bak
 fi
 
-# Generate the shared API secret key / JWT secret if still empty. These must be
-# identical across every Airflow component (scheduler signs each task's internal
-# Execution API JWT with these, airflow-api-server verifies it) - left as
-# independent per-container defaults, every task fails with 403 Forbidden.
+# Generate a shared API secret key / JWT secret for Airflow (if empty). 
+# These must be identical across every Airflow component.
+# Airflow scheduler signs each task's internal Execution API JWT with these, airflow-api-server verifies it.
 if grep -q '^AIRFLOW_API_SECRET_KEY=$' .env 2>/dev/null; then
     echo "Generating AIRFLOW_API_SECRET_KEY ..."
     API_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
@@ -38,30 +38,24 @@ if grep -q '^AIRFLOW_JWT_SECRET=$' .env 2>/dev/null; then
     rm -f .env.bak
 fi
 
+# Creating data folders
+
 echo "Creating data-* host directories ..."
 mkdir -p data-postgres data-airflow-postgres data-airflow-logs data-kafka \
          data-spark-logs data-spark-master data-spark-worker-1 data-spark-worker-2 \
          data-spark-checkpoints data-grafana data-loki
 
-# Every container that writes into a bind-mounted host directory here runs
-# as a different, non-host-matching uid/gid (Airflow: uid=50000 gid=0;
-# Spark: uid=185 gid=185; etc.) - a freshly-created host directory is
-# owner-only-writable by default, which causes real, confirmed-by-testing
-# PermissionErrors ("/opt/airflow/logs/dag_processor",
-# "mkdir of file:/tmp/spark-data/checkpoints/truck_position failed").
-# World-writable is the simplest fix that works regardless of which
-# container's uid/gid ends up writing here - acceptable for a local,
-# single-user demo where these are just data/log directories, not code.
+# Every container runs as a different, non-host-matching uid/gid.
+# Ex: Airflow: uid=50000 gid=0; Spark: uid=185 gid=185; etc.
+# Freshly-created host directory is owner-only-writable by default, which causes PermissionErrors 
+# World-writable is the simplest fix that works regardless of which container's uid/gid ends up writing here.
+# Note: acceptable for a local, single-user demo ONLY (no Production).
 chmod 777 data-airflow-logs data-spark-logs data-spark-master \
           data-spark-worker-1 data-spark-worker-2 data-spark-checkpoints \
           data-grafana data-loki dbt
 # Recursive: a non-recursive chmod on ./dbt alone doesn't touch pre-existing
 # subdirectories/files from an earlier host-side `dbt` run (e.g. dbt/logs/,
-# dbt/target/) - those stay at their original 755/644 and are just as
-# unwritable to the container's airflow user, causing
-# PermissionError: [Errno 13] '/opt/dbt/logs/dbt.log' the first time
-# `dbt snapshot`/`run`/`test` runs inside airflow-scheduler (confirmed by
-# testing).
+# dbt/target/) 
 chmod -R 777 dbt
 
 if [ ! -w dbt ]; then

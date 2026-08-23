@@ -22,14 +22,13 @@ to ingest without needing real IoT hardware.
 └────────┬─────────┘
          │
     ┌────┴──────────────────────────────────┐
-    │                                       │
+    │  Own service                          │ Airflow-scheduled
     ▼                                       ▼
-┌──────────────────────────┐   ┌──────────────────────────────────────┐
-│ spark-streaming-         │   │  Spark batch jobs                    │
-│ truck-position           │   │  (spark-batch-jobs/bronze_ingestion/,│
-│ (persistent Structured   │   │   orchestrated by Airflow)           │
-│  Streaming, own service) │   └──────────────┬───────────────────────┘
-└──────────────┬───────────┘                  │
+┌────────────────────────────────┐   ┌────────────────────────────────────┐
+| Spark Structured Streaming     |   | Spark incremental batches          |
+| Folder:                        │   │ Folder:                            │
+|  spark-streaming-jobs          |   | ./spark-batch-jobs/bronze_ingestion|
+└──────────────┬─────────────────┘   └────────┬───────────────────────────┘
                │                              │
                ▼                              ▼
      ┌──────────────────────────────────────────────┐
@@ -68,33 +67,28 @@ native JDBC writer can do neither.
 
 Only **one** domain runs as persistent Spark Structured Streaming: truck position. Everything else — customer,
 product, order, payment, and inventory events — runs as periodic incremental batch, orchestrated by Airflow.
-This was a deliberate design decision, refined twice during implementation:
+This is a deliberate design decision and only aims at showcasing airflow with Spark incrementatiobatch jobs.
 
-1. **Initially**, all "hot path" domains (orders, payments, inventory, truck-position) were planned as
-   persistent streaming, with customer/product as periodic batch.
-2. **Revised**: orders/payments/inventory moved to periodic batch too, since none of them have a genuine
-   sub-minute freshness requirement — only the live truck map does. This freed real resources (see below) and
-   left one consistent ingestion mechanism (Kafka-offset-tracked periodic batch) for five of the six domains.
-3. **A hard platform constraint reinforced this**: Spark Standalone does **not support `--deploy-mode cluster`
-   for Python applications at all** (confirmed directly — `SparkException: Cluster deploy mode is currently
-   not supported for python applications on standalone clusters`). A persistent streaming job's driver, in
-   client mode, blocks for the query's entire (indefinite) lifetime — completely wrong for an Airflow
-   `SparkSubmitOperator` task, which would occupy a LocalExecutor slot forever. The truck-position job runs as
-   its **own docker-compose service** (`spark-streaming-truck-position`, `restart: unless-stopped`) specifically
-   because of this — Docker supervises it directly, and `bronze_streaming_supervisor_dag.py` only monitors/alerts
-   (checks Spark Master's REST API, raises `AirflowException` if the app isn't listed as running) rather than
-   attempting to resubmit it.
+Limitations explained:
+- Spark Standalone does **not support `--deploy-mode cluster` for Python applications**.  
+- A persistent streaming job's driver, in client mode, blocks for the query's entire (indefinite) lifetime — completely wrong for an Airflow 
+`SparkSubmitOperator` task, which would occupy a LocalExecutor slot forever.   
+- The truck-position job runs as its **own docker-compose service** (`spark-streaming-truck-position`, `restart: unless-stopped`) specifically
+because of this — Docker supervises it directly, and `bronze_streaming_supervisor_dag.py` only monitors/alerts
+(checks Spark Master's REST API, raises `AirflowException` if the app isn't listed as running) rather than
+attempting to resubmit it.
 
 ### Kafka Connect JDBC Sink was considered and rejected for the streaming job
 
 Kafka Connect's JDBC Sink connector is the more idiomatic, lower-code way to do a pure Kafka→Postgres copy, and
 was seriously evaluated as a replacement for the hand-rolled `foreachBatch` Spark job. It was rejected for three
-concrete reasons: (1) it would remove the project's only Spark Streaming example, working against the stated
-Airflow+dbt+Spark learning goal; (2) it can't express `ST_MakePoint(lon, lat)::geography` inline — the sink
-maps fields straight to columns, so PostGIS construction would need a generated-column/trigger workaround;
-(3) the streaming job's silver `truck_positions_current` side-effect upsert (near-zero-latency live map refresh)
-would need a second connector. The Spark version was already built and verified end-to-end at the time of the
-decision, which also weighed against switching to something unverified.
+concrete reasons:  
+- (1) it would remove the project's only Spark Streaming example, working against the stated
+Airflow+dbt+Spark learning goal;  
+- (2) it can't express `ST_MakePoint(lon, lat)::geography` inline — the sink maps fields straight to columns, so PostGIS 
+construction would need a generated-column/trigger workaround;  
+- (3) the streaming job's silver `truck_positions_current` side-effect upsert (near-zero-latency live map refresh)
+would need a second connector. 
 
 ## Resource-sharing model (one shared Spark cluster)
 
