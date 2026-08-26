@@ -3,22 +3,24 @@
 ## Overview
 
 This is a medallion (bronze/silver/gold) pipeline for a simulated logistics scenario: a resale warehouse in
-Biel, Switzerland, selling 100 products online with delivery across Switzerland, France, Germany, and Italy.
+Biel/Bienne, Switzerland, selling products online with delivery to customers across Switzerland (40 reference
+cities, a configurable subset active at a time via `reference.delivery_zones`).
 
-A synthetic data generator plays the role of "the real world" (orders arriving, trucks moving, payments
-processing) to abstract away both IoT messages and MQTT broker but provide the pipeline with realistic data 
-to ingest without needing real IoT hardware. 
+A synthetic data generator plays the role of "the real world" (customers registering, purchase orders moving
+through invoicing/dispatch/delivery, trucks consolidating multi-stop runs, automatic restock) to abstract away
+both IoT messages and MQTT broker but provide the pipeline with realistic data to ingest without needing real
+IoT hardware. See [`docs/DATA_SCHEMA.md`](DATA_SCHEMA.md) for the full domain/table reference.
 
 ## Component diagram
 
 ```
 ┌──────────────────┐
-│  data-generator  │  (Python, confluent-kafka) — orders/payments/inventory/customers/
-└────────┬─────────┘   products/truck-position lifecycle simulation
+│  data-generator  │  (Python, confluent-kafka) — customers/products/purchase orders/
+└────────┬─────────┘   line items/invoices/inventory/truck fleet/truck-position sim
          │ publishes JSON
          ▼
 ┌──────────────────┐
-│      Kafka       │  (KRaft mode, single broker, 6 topics) ◄── Kafka UI (browse/inspect)
+│      Kafka       │  (KRaft mode, single broker, 8 topics) ◄── Kafka UI (browse/inspect)
 └────────┬─────────┘
          │
     ┌────┴──────────────────────────────────┐
@@ -66,7 +68,8 @@ native JDBC writer can do neither.
 ## Why streaming vs. batch is split the way it is
 
 Only **one** domain runs as persistent Spark Structured Streaming: truck position. Everything else — customer,
-product, order, payment, and inventory events — runs as periodic incremental batch, orchestrated by Airflow.
+product, purchase order, line item, invoice, inventory, and truck fleet events — runs as periodic incremental
+batch, orchestrated by Airflow.
 This is a deliberate design decision and only aims at showcasing airflow with Spark incrementatiobatch jobs.
 
 Limitations explained:
@@ -111,15 +114,19 @@ See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full resource budget and 
 
 ## Airflow DAG inventory
 
+Full detail (the shared bronze-ingestion factory, Assets/lineage, schedule parametrization, concurrency
+model) is in [`docs/AIRFLOW3_PROJECT.md`](AIRFLOW3_PROJECT.md) — this table is the map.
+
 | DAG | Schedule | Purpose |
 |---|---|---|
 | `bronze_streaming_supervisor_dag` | every 5 min | Monitoring-only: alerts (fails the task) if the truck-position streaming app isn't running on Spark Master. Does not resubmit — Docker's `restart: unless-stopped` handles that. |
-| `bronze_ingestion_dag` | every 10 min | 5 parallel client-mode `SparkSubmitOperator` tasks: Kafka→bronze for customer/product/order/payment/inventory events (batch Kafka reader, offsets tracked in `control.kafka_offsets`). |
-| `weather_enrichment_dag` | hourly | `PythonOperator` pulls current + forecast from OpenWeatherMap for 5 fixed locations, writes to `iot.weather_observations`. Not Spark — there's no streaming source, just a REST API. |
-| `silver_customers_products_dag` | every 15 min | Bronze→silver for the two low-frequency reference domains. |
-| `silver_orders_dag`, `silver_payments_dag`, `silver_inventory_dag` | every 10 min | Bronze→silver for their respective domains, each with lifecycle/consistency validation. `silver_inventory_dag` also runs the automatic restock check afterward. |
+| `bronze_ingest_customer_events_dag`, `bronze_ingest_product_events_dag`, `bronze_ingest_purchase_order_events_dag`, `bronze_ingest_product_on_order_events_dag`, `bronze_ingest_invoice_events_dag`, `bronze_ingest_truck_fleet_events_dag`, `bronze_ingest_inventory_changes_dag` | every 5 min | One `SparkSubmitOperator` task each, built from a shared factory (`common/spark_ingestion_dag_factory.py`) — Kafka→bronze for the respective domain, offsets tracked in `control.kafka_offsets`. |
+| `weather_enrichment_dag` | hourly | `PythonOperator` pulls current + forecast from OpenWeatherMap for the locations in `reference.weather_stations`, writes to `iot.weather_observations`. Not Spark — there's no streaming source, just a REST API. |
+| `silver_customers_products_dag` | every 3 min | Bronze→silver for customers, products, and truck fleet (3 parallel tasks). |
+| `silver_purchase_orders_dag` | every 3 min | Bronze→silver for purchase orders + line items (2 sequenced Spark jobs), incl. the 8-state lifecycle validation. |
+| `silver_invoices_dag`, `silver_inventory_dag` | every 3 min | Bronze→silver for their respective domains, each with lifecycle/consistency validation. `silver_inventory_dag` also runs the automatic restock check afterward. |
 | `silver_truck_positions_dag` | every 2 min | Bronze→silver validation/enrichment (bounding-box, orphan-order checks) — **not** the live map's primary data path, which is refreshed directly by the streaming job itself. |
-| `gold_dbt_dag` | triggered when **all 6** silver Assets have updated since its last run (Airflow 3 Asset-list AND semantics) | `dbt snapshot` → `dbt run` → `dbt test` as three separate `BashOperator` tasks, then a gold row-count `SQLCheckOperator`. |
+| `gold_dbt_dag` | triggered when **7 of 8** silver Assets have updated since its last run (Airflow 3 Asset-list AND semantics; excludes the near-static `truck_fleet_current`, which would otherwise starve the AND condition after its one-time seed) | `dbt deps` → `dbt run --select staging` → `dbt snapshot` → `dbt run` → `dbt test` → a gold row-count `SQLCheckOperator`, as separate tasks. |
 
 Deliberately mixed operator types across these DAGs (`BashOperator`, `PythonOperator`, `SparkSubmitOperator`,
 `SQLThresholdCheckOperator`/`SQLCheckOperator`, `ShortCircuitOperator`, Asset-based scheduling) — a learning

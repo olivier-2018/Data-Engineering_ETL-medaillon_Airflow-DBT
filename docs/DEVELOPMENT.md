@@ -61,60 +61,94 @@ instance would double-write to the same Kafka consumer group / checkpoint direct
 
 The single source of truth for every generator-tunable parameter (secrets stay in `.env`, never here).
 
-| Field | Default | Affects |
+Structural/reference data (delivery zones/geography, product categories, weather station locations) lives in
+Postgres (`reference.*`/`silver.*`) instead, read once at generator startup - see
+[`docs/DATA_SCHEMA.md`](DATA_SCHEMA.md).
+
+| Field | Value | Affects |
 |---|---|---|
-| `warehouse.origin_lat`/`origin_lon` | Biel, CH | Fixed dispatch origin for every shipment. |
-| `products.num_products` | 100 | Initial catalog size (seeded as `created` events at generator startup). |
-| `products.initial_stock_min`/`initial_stock_max` | 200 / 1000 | Random range for each product's starting stock. |
-| `products.restock_threshold_pct` | 20 | Below this % of `initial_stock`, `restock_check.py` triggers a replenishment. |
-| `products.restock_target_pct` | 100 | Restock brings the product back up to this % of `initial_stock`. |
-| `products.attribute_update_rate_per_hour` | 2 | Rate of price/category-change events — feeds the product SCD2 snapshot. Only affects periodic-batch ingestion load, not the streaming job. |
-| `customers.num_customers` | 500 | Initial customer pool size. |
+| `customers.creation_rate_per_minute` | 2 | How fast new customers register. |
+| `customers.max_customers` | 500 | Ceiling on total customer-base size, reached gradually via the creation rate above. |
+| `customers.verification_delay_seconds` | 3-8 | Delay between account creation and `account_verified`. |
 | `customers.attribute_update_rate_per_hour` | 5 | Address/segment-change rate — feeds the customer SCD2 snapshot. |
-| `orders.target_concurrent_orders` | 50 | Ceiling on simultaneously-open orders the generator will maintain. |
-| `orders.order_arrival_rate_per_minute` | 6 | How fast new orders appear — increases load on the periodic batch ingestion jobs, **not** the streaming job. |
-| `orders.cancellation_probability` | 0.05 | Fraction of pending orders that get cancelled instead of progressing. |
-| `payments.failure_probability` | 0.02 | Fraction of payments that fail instead of capturing. |
-| `payments.processing_delay_seconds` | 5-60 | Simulated delay between authorization and capture/failure. |
-| `trucks.num_trucks` | 12 | **Hard ceiling on concurrent `in_transit` shipments** — this is the one setting that directly affects the streaming job's load (bounds `truck_position_events` volume to `num_trucks × ping frequency`, regardless of order volume). |
-| `trucks.avg_speed_kmh` | 80 | Drives the simulated `time_to_destination` (straight-line interpolation, no real routing). |
-| `trucks.position_ping_interval_seconds` | 15 | Controls how often the live map updates — the other setting that directly affects streaming-job load. |
-| `zones.<CH\|FR\|DE\|IT>` | see file | Bounding boxes for random destination selection per country. |
-| `weather.locations` | 5 fixed cities | Consumed by `weather_enrichment_dag`, not the generator — kept in this file since it's the same kind of scenario-sizing parameter. |
-| `weather.poll_interval_hours` | 1 | How often `weather_enrichment_dag` pulls from OpenWeatherMap. |
+| `customers.disable_rate_per_hour` | 0.1 | Chance per customer of an `account_disabled` event. |
+| `customers.re_enable_rate_per_hour` | 5 | Chance per disabled customer of an `account_enabled` event. |
+| `orders.max_concurrent_orders_per_customer` | 3 | Per-customer cap on simultaneously open (non-terminal) purchase orders. |
+| `orders.order_arrival_rate_per_minute` | 6 | How fast new purchase orders appear system-wide. |
+| `orders.cancellation_probability` | 0.05 | Chance a purchase order gets cancelled by the customer. |
+| `orders.max_products_per_po` | 5 | Max distinct products (line items) per purchase order. |
+| `orders.max_products_qty_per_po` | 10 | Max quantity ordered per individual line item. |
+| `orders.home_delivery_probability` | 0.95 | Chance the delivery zone is the customer's own home city rather than a different zone. |
+| `orders.delivery_buffer_days` | 1 | Added on top of travel time when computing `target_delivery_date`. |
+| `invoices.due_minutes` | 1 (test value) | Time to settle before goods can be loaded onto a truck. |
+| `invoices.non_payment_probability` | 0.10 | Chance an invoice isn't paid by its due time. |
+| `invoices.max_reminders` | 3 | Reminders before the linked purchase order is cancelled. |
+| `dispatch.min_batch_size` | 5 | Min paid orders queued in a zone before dispatching a truck. |
+| `dispatch.max_wait_minutes` | 3 (test value) | Max time an order waits on-hold before dispatch anyway. |
+| `trucks.fleet_size` | 20 | Number of trucks in the fleet. |
+| `trucks.capacity_products` | 500 | Max product units (summed across line items) per truck run. |
+| `trucks.avg_speed_kmh` | 80 | Drives simulated in-transit leg timing. |
+| `trucks.position_ping_interval_seconds` | 15 | Controls live-map update frequency — the one setting that directly affects the streaming job's load. |
+| `trucks.load_seconds_per_order` | 10 | Simulated time to load one order onto a truck. |
+| `products.num_products` | 100 | Fixed warehouse catalog size, seeded once at generator startup. |
+| `products.nominal_capacity_min`/`nominal_capacity_max` | 10 / 50 (test values) | Range each product's own `nominal_capacity` is generated within at seed time. |
+| `products.restock_threshold_pct` | 20 | Refill trigger: `restock_required` when `qty` < this % of `nominal_capacity` (computed in `products_to_silver.py`). |
+| `products.restock_target_pct` | 100 | A refill (`restock_check.py`) brings stock back up to this % of `nominal_capacity`. |
+| `products.refill_discount_pct` | 40 | Refill unit price is this % below the listed sale price. |
+| `products.attribute_update_rate_per_hour` | 2 | Rate of price/category-change events — feeds the product SCD2 snapshot. |
+| `weather.poll_interval_hours` | 1 | How often `weather_enrichment_dag` pulls from OpenWeatherMap (station locations come from `reference.weather_stations`, not this file). |
 | `kafka.topics.*` | see file | Topic name mapping — change only if you also update every job that reads/writes that topic. |
+| `kafka.partitions_per_topic`/`replication_factor` | 2 / 1 | Kafka topic creation parameters. |
 
 ## Adding a new domain
 
-Following the established pattern (using an existing domain as a template, e.g. `payments`):
+Following the established pattern (using an existing domain as a template, e.g. `invoices`):
 
 1. **Schema**: add the bronze table (`config/postgres/initdb/01-init-schema.sql`) — decide hypertable vs. plain
    table based on whether it's genuinely time-series. Add a `silver.<domain>_current` table + a matching
    `silver.error_<domain>` table. Grant `pipeline_rw` `INSERT` (not `UPDATE`) on the new bronze table in
-   `02-create-role-and-grants.sh`.
+   `03-create-role-and-grants.sh`.
 2. **Generator**: add `data_generators/generators/<domain>.py`, wire it into `main.py`'s tick loop.
 3. **Ingestion**: decide streaming vs. periodic batch (see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) for the
    reasoning that governs this choice — only genuinely sub-minute-freshness domains justify a persistent
-   streaming job). For periodic batch, add a thin wrapper in `spark-batch-jobs/bronze_ingestion/` calling the
-   shared `run_ingestion()` helper.
-4. **Silver**: add `spark-batch-jobs/<domain>_to_silver.py`, following the watermark-read → validate → upsert
-   → watermark-write pattern in `shared_utils.py`. If the job builds its DataFrame with
-   `spark.createDataFrame([Row(...)])` (the pattern most existing `*_to_silver.py` jobs use), define an explicit
-   `StructType` rather than relying on inference — if every row in one incremental batch happens to have `NULL`
-   in some nullable source column (e.g. a batch of only "attribute updated" events that don't touch every
-   field), inference fails outright with `[CANNOT_DETERMINE_TYPE]` rather than just guessing wrong. Confirmed by
-   testing; fixed this way in `products_to_silver.py`, still a latent gap in the older `*_to_silver.py` jobs
-   (deferred, not forgotten). Separately: if the job passes a Python list as a `psycopg2` parameter against a
-   `uuid` column (e.g. `WHERE order_id = ANY(%s)`), cast it explicitly - `WHERE order_id = ANY(%s::uuid[])` -
-   psycopg2 can't infer the array element type on its own and Postgres rejects the resulting `uuid = text`
-   comparison (confirmed by testing, hit twice - `truck_positions_to_silver.py` and `inventory_to_silver.py`).
-5. **Airflow**: add a DAG (or a task in an existing one) with a `ShortCircuitOperator` (skip if no new bronze
-   data) → `SparkSubmitOperator` → SQL-check → `outlets=[Asset(...)]`. The `SparkSubmitOperator`'s `conf` must
-   set **all three** of `spark.cores.max`, `spark.driver.memory`, and `spark.executor.memory` explicitly (see
-   "Running a Spark job locally" above for why the memory settings are just as load-bearing as the cores cap,
-   not optional) — copy the values from any existing DAG (`512m`/`512m`/`2` cores is the established default.
+   streaming job). For periodic batch, add `spark-batch-jobs/bronze_ingestion/ingest_<domain>_events.py`
+   calling the shared `run_ingestion()` helper, and a `bronze_ingest_<domain>_events_dag.py` in `airflow/dags/`
+   built from the shared `common/spark_ingestion_dag_factory.py` (see step 5 for the two things every caller
+   of that factory must do).
+4. **Silver**: add `spark-batch-jobs/silver_processing/<domain>_to_silver.py`, following the watermark-read →
+   validate → upsert → watermark-write pattern in `shared_utils.py`. Notes that apply to every new job here:
+   - Build the DataFrame with an explicit `StructType` (`spark.createDataFrame([Row(...)], schema=SCHEMA)`)
+     rather than relying on inference - a batch where every row happens to have `NULL` in some nullable column
+     fails inference outright with `[CANNOT_DETERMINE_TYPE]`.
+   - Cast any Postgres `DECIMAL`/`NUMERIC` column to `float8` in the SQL query itself if the schema declares it
+     `DoubleType()` - psycopg2 returns `DECIMAL` as `decimal.Decimal`, which PySpark's `DoubleType` verifier
+     rejects outright.
+   - If a `*_current` table has a `created_at NOT NULL` column derived via `coalesce_cols` from a one-time
+     `created`/`status='created'` bronze event, add a fallback (earliest `event_at` for that key in the batch)
+     for the case where that one-time row never made it into bronze - otherwise the first-ever insert for that
+     key has no source for `created_at` at all, fails the NOT NULL constraint, and - since a failed batch never
+     advances the watermark - permanently blocks the job on every future run.
+   - When comparing a Spark row's UUID-typed column (a plain Python `str`) against a set of IDs fetched
+     straight from Postgres via `fetch_incremental()`, cast those fetched values to `str()` - psycopg2 returns
+     a Postgres `UUID` column as a `uuid.UUID` object, which is never equal to a `str` even for the same value.
+   - If the job passes a Python list as a `psycopg2` parameter against a `uuid` column (e.g.
+     `WHERE order_id = ANY(%s)`), cast it explicitly - `WHERE order_id = ANY(%s::uuid[])` - psycopg2 can't
+     infer the array element type on its own and Postgres rejects the resulting `uuid = text` comparison.
+   - `route_errors()` expects `rows: list[tuple]` of `(json.dumps(...), reason_code)` pairs, not a list of dicts.
+5. **Airflow**: for a new silver domain, add a DAG (or a task in an existing one) with a `ShortCircuitOperator`
+   (skip if no new bronze data) → `SparkSubmitOperator` → SQL-check → `outlets=[Asset(...)]`. For a new bronze
+   domain, use the shared factory (`common/spark_ingestion_dag_factory.py`) rather than hand-writing a `with
+   DAG(...)` block - every caller must pass `fileloc=__file__` (otherwise the DAG is attributed to the factory
+   file, not the caller, and silently never registers) and must itself `from airflow import DAG` for a
+   `dag: DAG = make_bronze_ingestion_dag(...)` type annotation (Airflow's DAG-discovery heuristic only parses a
+   file that contains the literal text "airflow", which a file only importing from `common.*` never does - see
+   [`docs/AIRFLOW3_PROJECT.md`](AIRFLOW3_PROJECT.md) §4). The `SparkSubmitOperator`'s `conf` must set **all
+   three** of `spark.cores.max`, `spark.driver.memory`, and `spark.executor.memory` explicitly (see "Running a
+   Spark job locally" above for why the memory settings are just as load-bearing as the cores cap, not
+   optional) — copy the values from any existing DAG (`512m`/`512m`/`2` cores is the established default.
    `spark.driver.host="airflow-scheduler"` is also required so the driver's SparkUI link resolves correctly
-   from a host browser — see [`docs/OBSERVABILITY.md`](OBSERVABILITY.md)).
+   from a host browser — see [`docs/OBSERVABILITY.md`](OBSERVABILITY.md)). New DAG schedules should read from
+   `common/pipeline_config.py`'s shared constants, not a hardcoded `timedelta(minutes=N)`.
 6. **Gold**: add a `dbt` staging model, and either extend an existing fact/dimension or add a new one.
 7. **Tests**: add schema tests to the relevant `.yml`, and a custom test if there's a business rule to enforce.
 
@@ -122,9 +156,10 @@ Following the established pattern (using an existing domain as a template, e.g. 
 
 - Every Spark job file should be `python3 -m py_compile`-clean before assuming it's correct — this catches
   real syntax errors cheaply, but **does not** catch runtime issues (missing env vars, permission errors,
-  Postgres constraint violations) — several real bugs in this project were only caught by actually running
-  jobs against the live cluster, not by syntax-checking alone.
+  Postgres constraint violations, PySpark schema/type mismatches) - these only surface by actually running the
+  job against the live cluster.
 - dbt models should pass `dbt parse` (no live DB needed) and, ideally, `dbt run`/`dbt test` against a real
   database before considering a change done.
-- Airflow DAGs should show zero import errors — `airflow dags list-import-errors`, or more directly, execute
-  each file as a plain Python module inside the built Airflow image.
+- Airflow DAGs should show zero import errors (`airflow dags list-import-errors`) **and** actually appear in
+  `airflow dags list` - a DAG that fails the discovery heuristic in step 5 above parses with zero errors yet
+  never registers, so an import-error check alone isn't sufficient; confirm the `dag_id` shows up.

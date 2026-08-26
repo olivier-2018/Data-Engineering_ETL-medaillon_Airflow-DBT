@@ -89,15 +89,28 @@ services:
     container_name: data-generator
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOG_LEVEL: ${GENERATOR_LOG_LEVEL:-INFO}  # set DEBUG for per-event tracing (main.py's own header comment)
+      # Read-only, silver+reference schemas only - used solely for
+      # startup state-resume reads (see redesign plan §3/§3c), never a
+      # live per-tick dependency. This is the generator's first-ever DB
+      # connection; it never touches iot (bronze) at all.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-iot_database}
+      GENERATOR_DB_USER: ${GENERATOR_DB_USER:-generator_ro}
+      GENERATOR_DB_PASSWORD: ${GENERATOR_DB_PASSWORD}
     volumes:
       - ./data_generators/config.yaml:/app/config.yaml:ro
     depends_on:
       kafka:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - airflow_network
-    # Measured steady-state via docker stats: ~16MB RSS, <0.1% CPU - trimmed
-    # from 512m/0.5 accordingly, leaving a still-generous margin.
+    # Was measured at ~16MB RSS/<0.1% CPU under the old flat-dict
+    # implementation; re-measure via `docker stats` once the class-based
+    # rewrite + DB connection are in, real usage will be higher than that.
     mem_limit: 192m
     memswap_limit: 192m
     cpus: '0.15'
@@ -338,6 +351,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-iot_database}
       PIPELINE_DB_USER: ${PIPELINE_DB_USER:-pipeline_rw}
       PIPELINE_DB_PASSWORD: ${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD must be set in .env}
+      GENERATOR_DB_USER: ${GENERATOR_DB_USER:-generator_ro}
+      GENERATOR_DB_PASSWORD: ${GENERATOR_DB_PASSWORD:?GENERATOR_DB_PASSWORD must be set in .env}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - ./data-postgres:/var/lib/postgresql/data
@@ -398,6 +413,19 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__PARALLELISM: 3
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
+      # Airflow's DAG-discovery "safe mode" pre-filters dags/ files: a file is
+      # only parsed as a possible DAG if its raw text contains the literal
+      # substring "airflow" and either "dag" or "asset" (case-insensitive) -
+      # a fast-path heuristic for large codebases with many non-DAG .py files
+      # mixed in (see airflow.utils.file.might_contain_dag_via_default_heuristic).
+      # Set here for completeness/other DagBag call sites, but note this does
+      # NOT reach the dag-processor's actual per-file parsing subprocess in
+      # Airflow 3.0.3 - airflow/dag_processing/processor.py's _parse_file()
+      # hardcodes safe_mode=True rather than reading this config value, so
+      # every DAG file's own source must independently satisfy the heuristic
+      # regardless of this setting (see airflow/dags/common/spark_ingestion_dag_factory.py
+      # for how the per-domain bronze-ingestion files do this).
+      AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: "false"
       # Airflow's own default is to create every newly-discovered DAG paused,
       # requiring a manual unpause per DAG. This project wants every DAG
       # running the moment Airflow starts, so every new DAG is created
@@ -515,6 +543,7 @@ services:
       - ./dbt:/opt/dbt:rw
       - ./data-airflow-logs:/opt/airflow/logs
       - ./data_generators/config.yaml:/opt/config/config.yaml:ro
+      - ./config/airflow/airflow_config.yml:/opt/config/airflow_config.yml:ro
     depends_on:
       - airflow-init
     networks:
@@ -537,6 +566,7 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./data-airflow-logs:/opt/airflow/logs
+      - ./config/airflow/airflow_config.yml:/opt/config/airflow_config.yml:ro
     depends_on:
       - airflow-init
     networks:
@@ -649,6 +679,32 @@ services:
     mem_limit: 100m
     memswap_limit: 100m
     cpus: '0.2'
+
+  # ===================================================================
+  # dbt-docs - static file server for `dbt docs generate`'s output
+  # (dbt/target/{index.html,manifest.json,catalog.json}). Deliberately
+  # split from the airflow-scheduler container that actually runs dbt
+  # (generation needs the dbt CLI + a warehouse connection; serving is
+  # just static files) - nginx:alpine has neither, hence the near-zero
+  # mem_limit versus every other service in this file. Not started by
+  # `docker compose up` - opt in via `docker compose --profile
+  # documentation up -d dbt-docs`, same pattern as the generator profile.
+  # dbt/target is regenerated on demand (gitignored) - if it's empty/stale,
+  # regenerate first: see docs/DBT_MODEL.md §10.
+  # ===================================================================
+  dbt-docs:
+    image: nginx:alpine
+    container_name: dbt-docs
+    ports:
+      - "9000:80"
+    volumes:
+      - ./dbt/target:/usr/share/nginx/html:ro
+    networks:
+      - airflow_network
+    mem_limit: 32m
+    memswap_limit: 32m
+    cpus: '0.1'
+    profiles: ["documentation"]
 
 networks:
   airflow_network:

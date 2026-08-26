@@ -1,12 +1,14 @@
 # IoT Logistics ETL Pipeline with Kafka/Airflow3/dbt/Spark
 
 A local, Docker-based demo to showcase a medallion (bronze/silver/gold) data pipeline, built around a simulated
-warehouse-and-delivery scenario: a resale warehouse in **Biel, Switzerland**, selling 100 products online with
-fast delivery across Switzerland, France, Germany, and Italy.
+warehouse-and-delivery scenario: a resale warehouse in **Biel/Bienne, Switzerland**, selling products online
+with delivery to customers across Switzerland (40 reference cities, a configurable subset active at a time).
 
-Synthetic order/payment/inventory/truck-GPS events flow through **Kafka** and get processed by **Apache Spark** into the bronze layer using:  
-- a **persistent Structured Streaming** job for live truck tracking, and  
-- periodic **incremental batches** for customer, inventory, orders, payments, and products data.  
+Synthetic customer/purchase-order/invoice/inventory/truck-GPS events flow through **Kafka** and get processed
+by **Apache Spark** into the bronze layer using:
+- a **persistent Structured Streaming** job for live truck tracking, and
+- periodic **incremental batches** for customer, product, purchase order, invoice, inventory, and truck fleet
+  data.
 
 
 Data is stored in a **TimescaleDB + PostGIS** Postgres instance across bronze/silver/gold schemas, get transformed
@@ -74,16 +76,17 @@ Once `scripts/start.sh` finishes, these are the web UIs available:
 | Kafka UI | http://localhost:8089 | Browse topics/partitions, tail live messages, inspect consumer groups — no login (auth disabled for this local demo). |
 | Spark Master | http://localhost:8080 | Cluster state — registered workers, running/completed applications, cores/memory in use. |
 | Spark Worker 1 / 2 | http://localhost:8081 / http://localhost:8082 | Per-worker executor detail. |
+| dbt docs | http://localhost:9000 | Generated dbt lineage graph/catalog - opt-in, not started by default (see [`docs/DBT_MODEL.md`](docs/DBT_MODEL.md#10-generated-documentation-lineage-graph-catalog)): `docker compose --profile documentation up -d dbt-docs` (after generating it at least once via `dbt docs generate`). |
 
 ### Grafana dashboards (folder: "IoT Logistics")
 
 Three dashboards are provisioned automatically — no manual import needed:
 
-- **Live Truck Map** — a Geomap panel plotting every truck's current position (`silver.truck_positions_current`,
+- **Live Truck Map** — a Geomap panel plotting every truck's current position (`silver.truck_current_position`,
   refreshed every 10s), fed directly by the persistent Structured Streaming job for near-real-time movement.
 - **Pipeline Health** — per-domain silver watermark lag, error-row counts, and bronze ingestion volume — the
   first place to look if data seems stale or a job seems stuck.
-- **Gold KPIs** — revenue by destination country, average time-to-destination, and products currently below
+- **Gold KPIs** — revenue by delivery zone, average time-to-destination, and products currently below
   their restock threshold.
 
 Every panel's query has been verified against real data (see [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)
@@ -100,13 +103,17 @@ Grafana's *Explore* view with a LogQL query like `{container="kafka"}`.
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Local dev workflow, `config.yaml` field reference, adding a new domain |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Resource budget rationale, scaling notes, known limitations |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Grafana dashboards, Loki log querying |
+| [`docs/AIRFLOW3_PROJECT.md`](docs/AIRFLOW3_PROJECT.md) | This project's Airflow 3 setup: DAG inventory, the shared bronze-ingestion factory, Assets, schedule parametrization, concurrency model - written for learning, not just reference |
+| [`docs/AIRFLOW3_BACKGROUND_OVERVIEW.md`](docs/AIRFLOW3_BACKGROUND_OVERVIEW.md) | Generic Airflow 3 tutorial/background (not specific to this repo) - concepts, DAG design patterns |
+| [`docs/DBT_MODEL.md`](docs/DBT_MODEL.md) | dbt gold-layer processing, model-by-model - written for learning, not just reference |
+| [`docs/DBT_BACKGROUND_OVERVIEW.md`](docs/DBT_BACKGROUND_OVERVIEW.md) | Generic dbt tutorial/background (not specific to this repo) - concepts, project structure, medallion architecture |
 
 ## Key features
 
 - **Genuine Spark Structured Streaming** for the one domain where sub-minute freshness matters (truck GPS position), running as its own supervised docker-compose service — everything else is deliberately periodic incremental batch. This is a deliberate choice to showcase airflow and dbt, and since Spark Standalone can't cluster-deploy Python streaming jobs, forcing everything into "streaming" would be resume-driven engineering, not the right tool for the job (demo airflow, dbt and spark).
-- **Immutable, append-only bronze layer** — every domain is an event log (order status/payment/shipment lifecycle transitions are separate rows, not in-place updates), enforced at the database-privilege level (`pipeline_rw` has no `UPDATE` grant on `iot.*`).
+- **Immutable, append-only bronze layer** — every domain is an event log (purchase-order/invoice/truck lifecycle transitions are separate rows, not in-place updates), enforced at the database-privilege level (`pipeline_rw` has no `UPDATE` grant on `iot.*`).
 - **Real PostGIS geography** for truck positions and weather locations, not just lat/lon floats — `ST_MakePoint`/ `ST_Y`/`ST_X` used throughout, verified against a live database.
-- **Real dbt SCD2** (snapshots) for customer/product attribute history and order/payment status transitions.
+- **Real dbt SCD2** (snapshots) for customer/product attribute history and purchase-order/invoice status transitions.
 - **A mix of Airflow operator types** by design — `BashOperator`, `PythonOperator`, `SparkSubmitOperator`, SQL-check operators, `ShortCircuitOperator`, and Airflow 3 Asset-based cross-DAG scheduling — for learning breadth, not because every task needed a different operator.
 
 ## Known limitations

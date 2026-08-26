@@ -1,0 +1,14 @@
+# DAG schedule cadences (§5/§7 of the redesign plan) - infrastructure config
+# for Airflow's own scheduling, not generator hyperparameters or business
+# reference data, hence its own file rather than data_generators/config.yaml.
+# Read by every bronze_ingest_*_dag.py / silver_*_dag.py file at DAG-parse
+# time via airflow/dags/common/pipeline_config.py - a single source of
+# truth instead of the same timedelta(minutes=N) retyped per file.
+#
+# Silver runs faster than bronze deliberately (not just "tighter" in
+# absolute terms): once a bronze batch lands, silver's next tick should
+# almost always catch it on the very next cycle rather than waiting almost
+# a full bronze cycle before picking it up.
+bronze_ingestion_schedule_minutes: 5
+silver_processing_schedule_minutes: 3
+truck_positions_schedule_minutes: 2   # bronze itself is populated continuously here, so this stays faster than the other silver DAGs

@@ -11,13 +11,13 @@
     {
       "id": 1,
       "type": "barchart",
-      "title": "Revenue by destination country (last 24h)",
+      "title": "Revenue by delivery zone (last 24h)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "datasource": {"type": "postgres", "uid": "iot_postgres"},
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT dc.country_name, sum(fso.order_amount) AS revenue FROM gold.fact_sales_orders fso JOIN gold.fact_shipments fs ON fs.order_id = fso.order_id JOIN gold.dim_destination_country dc ON dc.country_code = fs.destination_country_key WHERE fso.updated_at > now() - interval '24 hours' GROUP BY dc.country_name ORDER BY revenue DESC",
+          "rawSql": "SELECT dz.city, sum(fpo.line_amount) AS revenue FROM gold.fact_product_on_orders fpo JOIN gold.fact_purchase_orders fo ON fo.purchase_order_id = fpo.purchase_order_id JOIN gold.dim_delivery_zone dz ON dz.zone_id = fo.zone_id WHERE fpo.updated_at > now() - interval '24 hours' GROUP BY dz.city ORDER BY revenue DESC",
           "refId": "A"
         }
       ]
@@ -45,7 +45,7 @@
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT p.name, f.current_stock, f.initial_stock FROM gold.fact_inventory_snapshot f JOIN gold.dim_product p ON p.product_id = f.product_id AND p.dbt_valid_to IS NULL WHERE f.is_below_restock_threshold AND f.snapshot_date = current_date",
+          "rawSql": "SELECT p.name, f.current_stock, f.nominal_capacity FROM gold.fact_inventory_snapshot f JOIN gold.dim_product p ON p.product_id = f.product_id AND p.dbt_valid_to IS NULL WHERE f.restock_required AND f.snapshot_date = current_date",
           "refId": "A"
         }
       ]

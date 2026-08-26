@@ -17,11 +17,12 @@ from airflow.providers.standard.operators.python import ShortCircuitOperator
 
 from common.assets import SILVER_INVENTORY
 from common.dq_checks import has_new_bronze_data
+from common.pipeline_config import SILVER_PROCESSING_SCHEDULE
 
 with DAG(
     dag_id="silver_inventory_dag",
     description="Bronze -> silver for inventory + automatic restock check (§7, §1c)",
-    schedule=timedelta(minutes=10),
+    schedule=SILVER_PROCESSING_SCHEDULE,
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -34,7 +35,7 @@ with DAG(
     )
     run_silver = SparkSubmitOperator(
         task_id="inventory_to_silver",
-        application="/opt/spark-batch-jobs/inventory_to_silver.py",
+        application="/opt/spark-batch-jobs/silver_processing/inventory_to_silver.py",
         name="inventory-to-silver",
         conn_id="spark_default",
         deploy_mode="client",
@@ -50,7 +51,7 @@ with DAG(
     )
     restock_check = BashOperator(
         task_id="restock_check",
-        bash_command="cd /opt/spark-batch-jobs/bronze_ingestion && python3 restock_check.py",
+        bash_command="cd /opt/spark-batch-jobs/silver_processing && python3 restock_check.py",
     )
 
     check >> run_silver >> check_errors >> restock_check

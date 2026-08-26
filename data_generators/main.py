@@ -1,25 +1,38 @@
-"""Orchestrator: seeds reference data, then runs a 1-second tick loop driving
-every domain generator per config.yaml's configured rates. Publishes
-synthetic events directly to Kafka - no MQTT hop (per the scenario decision)."""
+"""Orchestrator: bootstraps state (fresh seed, or resume from silver via
+db.py), then runs a 1-second tick loop driving every domain's business logic
+per config.yaml's configured rates. Publishes synthetic events directly to
+Kafka - no MQTT hop (per the scenario decision).
+
+See TODO_improve_business_logic.md / the redesign plan
+(i-want-to-implement-pure-boole.md) for the full business-process rationale:
+registration -> purchase order -> invoice -> consolidated truck delivery ->
+restock.
+
+Set LOG_LEVEL=DEBUG (env var, default INFO) for detailed per-event tracing
+from every generators/ module - each emits its own logger.debug() calls at
+every state change/decision point."""
 from __future__ import annotations
 
 import logging
+import os
 import random
 import signal
-import sys
 import time
 
+import db
 from kafka_producer import build_producer
 from settings import load_config
 
-from generators import customers as customers_gen
-from generators import orders as orders_gen
-from generators import payments as payments_gen
-from generators import products as products_gen
-from generators.inventory import InventoryState
-from generators.trucks import TruckFleet
+from generators.customer import Customer
+from generators.dispatch import Dispatcher
+from generators.invoice import Invoice
+from generators.product import Product
+from generators.purchase_order import PurchaseOrder
+from generators.scheduler import Scheduler
+from generators.truck import Truck
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("generator")
 
 TICK_SECONDS = 1.0
@@ -33,31 +46,222 @@ def _handle_shutdown(signum, frame):
     _shutdown = True
 
 
+def _warehouse(zones: list[dict]) -> dict:
+    return next(z for z in zones if z["is_warehouse"])
+
+
+def _delivery_zone_for(customer: Customer, zones: list[dict], cfg: dict) -> dict:
+    """95% of orders (home_delivery_probability) deliver to the customer's
+    own home city; the rest go to a different zone (business/gift
+    delivery). A customer's `city` is always sourced from this same active
+    `zones` list at both creation (Customer.create) and drift
+    (Customer.maybe_update) time, so the home-city lookup below is
+    guaranteed to resolve under normal operation - it cannot land on a
+    zone that isn't currently active.
+
+    The one way this invariant could break is a *resumed* customer whose
+    home city was deactivated (reference.delivery_zones.is_active flipped
+    false) while the generator was down. There's no self-healing for that
+    case here: the generator's DB role (generator_ro) is read-only by
+    design (redesign plan §2a/decision #11) and cannot flip a zone back to
+    active itself - that would require pipeline_rw (which does have
+    UPDATE on reference.*) acting from a Spark job, a decision deliberately
+    left for that layer, not the generator, if it's ever needed. This falls
+    back to a random active zone instead and logs a warning, rather than
+    silently mis-delivering or crashing.
+    """
+    if random.random() < cfg["orders"]["home_delivery_probability"]:
+        home_zone = next((z for z in zones if z["city"] == customer.city), None)
+        if home_zone is not None:
+            return home_zone
+        logger.warning(
+            "Customer %s (%s)'s home city %r is not (or no longer) an active delivery zone - "
+            "falling back to a random active zone for this order.",
+            customer.email, customer.customer_id, customer.city,
+        )
+    return random.choice(zones)
+
+
+def _log_no_eligible_customer(customers: dict, cfg: dict) -> None:
+    """Breaks down *why* no customer could place a new order this tick -
+    the same three reasons Customer.can_create_purchase_order() checks,
+    tallied instead of collapsed into one boolean - and suggests concrete
+    remedies. WARNING, not DEBUG: "the whole system is currently
+    order-creation-starved" is operationally meaningful, but this still
+    stays naturally rate-limited since it only fires when the per-tick
+    order-arrival roll already succeeded (at most
+    order_arrival_rate_per_minute times per minute, not every tick)."""
+    max_open = cfg["orders"]["max_concurrent_orders_per_customer"]
+    total = len(customers)
+    unverified = sum(1 for c in customers.values() if not c.verified_account)
+    disabled = sum(1 for c in customers.values() if c.disabled_account)
+    at_cap = sum(
+        1 for c in customers.values()
+        if c.verified_account and not c.disabled_account and len(c.open_order_ids) >= max_open
+    )
+    logger.warning(
+        "PurchaseOrder creation rejected -- no eligible customer (%d total: "
+        "%d unverified, %d disabled, %d at the max_concurrent_orders_per_customer=%d cap). \n"
+        "== Consider: 1) raising PO limit per customer, 2) increase customer creation rate, "
+        "or 3) speed up delivery throughput. ==", total, unverified, disabled, at_cap, max_open,
+    )
+
+
+def _bootstrap(producer, cfg: dict, scheduler: Scheduler, state: dict):
+    zones = state["zones"]
+    warehouse = _warehouse(zones)
+    categories = state["categories"]
+
+    customers: dict[str, Customer] = {}
+    for row in state["customers"]:
+        customer = Customer(
+            customer_id=str(row["customer_id"]),
+            name=row["name"],
+            email=row["email"],
+            address=row["address"],
+            tel=row["tel"],
+            country=row["country"],
+            city=row["city"],
+            segment=row["segment"],
+            verified_account=row["verified_account"],
+            disabled_account=row["disabled_account"],
+            created_at=row["created_at"].isoformat() if row["created_at"] else None,
+        )
+        customers[customer.customer_id] = customer
+    if not customers:
+        logger.info("No existing customers found - starting from an empty customer base.")
+
+    products: dict[str, Product] = {}
+    for row in state["products"]:
+        product = Product(
+            product_id=str(row["product_id"]),
+            name=row["name"],
+            brand=row["brand"],
+            model=row["model"],
+            category=row["category"],
+            subcategory=row["subcategory"],
+            unit_price=float(row["unit_price"]),
+            weight_kg=float(row["weight_kg"]) if row["weight_kg"] is not None else None,
+            nominal_capacity=row["nominal_capacity"],
+            qty=row["qty"],
+        )
+        products[product.product_id] = product
+    if not products:
+        products = Product.seed_catalog(producer, cfg, categories)
+
+    trucks: list[Truck] = []
+    for row in state["trucks"]:
+        trucks.append(
+            Truck(
+                truck_id=row["truck_id"],
+                name=row["name"],
+                brand=row["brand"],
+                model=row["model"],
+                size=row["size"],
+                capacity=row["capacity"],
+                weight_kg=float(row["weight_kg"]) if row["weight_kg"] is not None else None,
+                warehouse=warehouse,
+                avg_speed_kmh=cfg["trucks"]["avg_speed_kmh"],
+            )
+        )
+    if not trucks:
+        trucks = Truck.seed_fleet(producer, cfg, warehouse)
+
+    line_items_by_order: dict[str, list] = {}
+    for row in state["line_items"]:
+        line_items_by_order.setdefault(str(row["purchase_order_id"]), []).append(
+            (str(row["product_id"]), row["qty_on_order"])
+        )
+
+    orders: dict[str, PurchaseOrder] = {}
+    for row in state["open_orders"]:
+        resumed_customer = customers.get(str(row["customer_id"]))
+        order = PurchaseOrder.from_resume(
+            row,
+            zones,
+            warehouse,
+            line_items_by_order.get(str(row["purchase_order_id"]), []),
+            customer_email=resumed_customer.email if resumed_customer else None,
+        )
+        # A truck resumes as "free" with an empty manifest (redesign plan
+        # §3c - only a genuine crash mid-run loses this, not a graceful
+        # restart), so any order left "loaded"/"in-transit" is no longer
+        # tracked by any truck object - requeue it rather than leaving it
+        # permanently stuck. In-memory repair only, no Kafka event: the
+        # bronze/silver history still accurately reflects what really
+        # happened, this is just live-simulation self-healing.
+        if order.status in ("loaded", "in-transit"):
+            logger.warning(
+                "Order %s resumed mid-truck-run (status=%s) but no truck object "
+                "retained its manifest across the restart - requeuing to on-hold.",
+                order.purchase_order_id, order.status,
+            )
+            order.status = "on-hold"
+            order.truck_id = None
+        elif order.status == "delivered":
+            order.status = "closed"
+
+        orders[order.purchase_order_id] = order
+        customer = customers.get(order.customer_id)
+        if customer is not None:
+            customer.open_order_ids.add(order.purchase_order_id)
+
+    invoices: dict[str, Invoice] = {}
+    for row in state["open_invoices"]:
+        purchase_order = orders.get(str(row["purchase_order_id"]))
+        if purchase_order is None:
+            continue
+        invoice = Invoice.from_resume(row, purchase_order, scheduler, producer, cfg, products)
+        invoices[invoice.invoice_id] = invoice
+
+    # Repair: a crash between PurchaseOrder.create() and create_invoice()
+    # (a sub-second window) would resume with an order stuck at "created"
+    # and no invoice - close that gap the same way the synchronous
+    # creation path normally would.
+    for order in list(orders.values()):
+        if order.status == "created":
+            order.create_invoice(producer)
+            amount = round(
+                sum(products[pid].unit_price * qty for pid, qty in order.line_items if pid in products), 2
+            )
+            invoice = Invoice.create(producer, cfg, scheduler, order, amount, products)
+            invoices[invoice.invoice_id] = invoice
+
+    dispatcher = Dispatcher(cfg, trucks, zones)
+    return customers, products, orders, invoices, trucks, dispatcher, zones
+
+
 def main() -> None:
+    # Graceful-shutdown handling matters here specifically: main.py is the
+    # one place that makes a plain `docker compose stop`/`restart` gap-free
+    # (redesign plan §3c) by flushing every recently-decided event to Kafka
+    # before the process actually exits, rather than relying solely on the
+    # DB-resume bootstrap below to reconstruct state on the next start.
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
+    logger.info("Log level: %s", LOG_LEVEL)
     cfg = load_config()
-    logger.info(
-        "Config loaded: %d products, %d customers, %d trucks",
-        cfg["products"]["num_products"],
-        cfg["customers"]["num_customers"],
-        cfg["trucks"]["num_trucks"],
-    )
-
     producer = build_producer()
+    scheduler = Scheduler()  # shared timer-heap for due-dates/reminders/loading - see generators/scheduler.py
 
-    logger.info("Seeding products ...")
-    products = products_gen.seed_products(producer, cfg)
-    logger.info("Seeding customers ...")
-    customers = customers_gen.seed_customers(producer, cfg)
-
-    order_registry = orders_gen.OrderRegistry()
-    inventory_state = InventoryState(products)
-    payment_state = payments_gen.PaymentState()
-    truck_fleet = TruckFleet(cfg)
-
-    order_arrival_per_tick = cfg["orders"]["order_arrival_rate_per_minute"] / 60.0
+    # Bootstrap: either a genuinely fresh stack (silver is empty -> seed
+    # products/trucks, start with zero customers/orders) or a resumed one
+    # (silver has prior state -> rehydrate every class from it). Either way,
+    # this is a one-shot startup read - the generator never queries Postgres
+    # again after this point (redesign plan §3/§3c: in-memory is
+    # authoritative from here on, DB access was purely for catching up).
+    logger.info("Loading bootstrap state from silver (generator_ro) ...")
+    state = db.load_bootstrap_state()
+    customers, products, orders, invoices, trucks, dispatcher, zones = _bootstrap(
+        producer, cfg, scheduler, state
+    )
+    warehouse = _warehouse(zones)
+    logger.info(
+        "Bootstrap complete: %d customers, %d products, %d trucks, %d open orders, "
+        "%d open invoices, %d active zones",
+        len(customers), len(products), len(trucks), len(orders), len(invoices), len(zones),
+    )
 
     logger.info("Starting tick loop (1 tick = %.1fs) ...", TICK_SECONDS)
     tick_count = 0
@@ -65,27 +269,98 @@ def main() -> None:
         tick_start = time.monotonic()
         tick_count += 1
 
-        products_gen.maybe_update_product(producer, cfg, products, TICK_SECONDS)
-        customers_gen.maybe_update_customer(producer, cfg, customers, TICK_SECONDS)
+        # 1. Fire any due timers (invoice due-dates/reminders, truck loading
+        #    steps, account verification) - see generators/scheduler.py.
+        try:
+            scheduler.tick()
+        except Exception:
+            logger.exception("A scheduled callback raised - continuing")
 
-        if random.random() < order_arrival_per_tick:
-            orders_gen.create_order(producer, cfg, order_registry, products, customers)
+        # 2. New customer registrations (rate-limited, capped at
+        #    max_customers) + slow background profile/disable/enable drift
+        #    on existing customers.
+        if len(customers) < cfg["customers"]["max_customers"]:
+            creation_probability = cfg["customers"]["creation_rate_per_minute"] / 60.0
+            if random.random() < creation_probability:
+                existing_emails = {c.email for c in customers.values()}
+                customer = Customer.create(producer, cfg, scheduler, zones, existing_emails)
+                customers[customer.customer_id] = customer
 
-        orders_gen.advance_orders(producer, cfg, order_registry, inventory_state, payment_state, truck_fleet)
-        payment_state.tick(producer)
+        for customer in list(customers.values()):
+            try:
+                customer.maybe_update(producer, cfg, zones, TICK_SECONDS)
+            except Exception:
+                logger.exception("Customer.maybe_update raised for %s (%s)", customer.email, customer.customer_id)
 
-        delivered_order_ids = truck_fleet.tick(producer)
-        for order_id in delivered_order_ids:
-            orders_gen.mark_delivered(producer, order_registry, order_id)
+        # 3. Product price drift (rare) - stock itself only ever moves via
+        #    PurchaseOrder.mark_paid()'s decrement, never here.
+        for product in products.values():
+            try:
+                product.maybe_update(producer, cfg, TICK_SECONDS)
+            except Exception:
+                logger.exception("Product.maybe_update raised for %r (%s)", product.name, product.product_id)
+
+        # 4. New purchase orders, from an eligible (verified, not disabled,
+        #    under their per-customer open-order cap) customer. The invoice
+        #    is created synchronously right after, since both "created" and
+        #    "invoiced" are instantaneous transitions per spec - there's no
+        #    reason to defer it to a later tick.
+        order_arrival_per_tick = cfg["orders"]["order_arrival_rate_per_minute"] / 60.0
+        if random.random() < order_arrival_per_tick and products:
+            eligible = [c for c in customers.values() if c.can_create_purchase_order(cfg)]
+            if not eligible:
+                _log_no_eligible_customer(customers, cfg)
+            else:
+                try:
+                    customer = random.choice(eligible)
+                    zone = _delivery_zone_for(customer, zones, cfg)
+                    order = PurchaseOrder.create(producer, customer, products, zone, warehouse, cfg)
+                    orders[order.purchase_order_id] = order
+                    customer.open_order_ids.add(order.purchase_order_id)
+
+                    order.create_invoice(producer)
+                    amount = round(sum(products[pid].unit_price * qty for pid, qty in order.line_items), 2)
+                    invoice = Invoice.create(producer, cfg, scheduler, order, amount, products)
+                    invoices[invoice.invoice_id] = invoice
+                except Exception:
+                    logger.exception("Order/invoice creation raised")
+
+        # 5. Truck consolidation (Dispatcher decides which on-hold orders to
+        #    batch onto a free truck) + truck movement/delivery progress.
+        #    Everything from here on downstream of "paid" is driven by
+        #    these two ticks, not by scanning order status directly.
+        try:
+            dispatcher.tick(producer, scheduler, orders)
+        except Exception:
+            logger.exception("Dispatcher.tick raised")
+
+        for truck in trucks:
+            try:
+                truck.tick(producer, cfg, dispatcher.on_free)
+            except Exception:
+                logger.exception("Truck.tick raised for %s", truck.truck_id)
+
+        # 6. Garbage-collect terminal orders/invoices from local in-memory
+        #    tracking dicts - Kafka/silver already has the full history, so
+        #    this is just bookkeeping cleanup, not a data-loss concern.
+        for order_id, order in list(orders.items()):
+            if order.status in ("closed", "cancelled"):
+                logger.debug("Order %s reached terminal status=%s, dropping from active tracking", order_id, order.status)
+                customer = customers.get(order.customer_id)
+                if customer is not None:
+                    customer.open_order_ids.discard(order_id)
+                del orders[order_id]
+                stale_invoice_id = next(
+                    (iid for iid, inv in invoices.items() if inv.purchase_order_id == order_id), None
+                )
+                invoices.pop(stale_invoice_id, None)
 
         if tick_count % 60 == 0:
             producer.flush()
             logger.info(
-                "tick=%d open_orders=%d active_shipments=%d free_trucks=%d",
-                tick_count,
-                order_registry.open_count(),
-                len(truck_fleet.active_shipments),
-                len(truck_fleet.free_trucks),
+                "tick=%d customers=%d open_orders=%d open_invoices=%d free_trucks=%d/%d",
+                tick_count, len(customers), len(orders), len(invoices),
+                len(dispatcher.free_trucks), len(trucks),
             )
 
         elapsed = time.monotonic() - tick_start

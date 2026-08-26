@@ -58,15 +58,22 @@ docker compose up -d grafana loki promtail
 cat <<EOF
 
 === Stack is up ===
+Kafka UI:           http://localhost:8089
+Airflow UI:         http://localhost:8090
 Spark Master UI:    http://localhost:8080
 Spark Worker 1 UI:  http://localhost:8081
 Spark Worker 2 UI:  http://localhost:8082
-Airflow UI:         http://localhost:8090
-Kafka UI:           http://localhost:8089
+dbt docs:           http://localhost:9000
 Grafana:            http://localhost:3000
+
+To get Airflow credentials:
+  docker compose exec airflow-api-server cat /opt/airflow/simple_auth_manager_passwords.json.generated
 
 To start generating synthetic data:
   docker compose --profile generator up -d data-generator
+
+To generate and visualize dbt docs:
+  docker compose --profile documentation up -d dbt-docs
 
 To stop the generator only:
   docker compose stop data-generator

@@ -9,6 +9,10 @@ dependencies = [
     # and has prebuilt wheels for 3.12.
     "confluent-kafka==2.15.0",
     "pyyaml==6.0.2",
+    # Startup-only, read-only bootstrap reads against silver/reference
+    # (generator_ro role) - see db.py / redesign plan §3/§3c. -binary ships
+    # a prebuilt wheel with libpq statically linked, no system package needed.
+    "psycopg2-binary==2.9.10",
 ]
 
 [tool.uv]
