@@ -354,8 +354,8 @@ services:
       - airflow_network
     # This is the client-mode driver itself (not just a submitter) - it
     # needs real headroom, unlike the now-lightweight spark-master.
-    mem_limit: 1024m
-    memswap_limit: 1024m
+    mem_limit: 768m
+    memswap_limit: 768m
     cpus: '0.5'
     restart: unless-stopped
 
@@ -382,8 +382,8 @@ services:
       - ./config/postgres/initdb:/docker-entrypoint-initdb.d:ro
     networks:
       - airflow_network
-    mem_limit: 640m
-    memswap_limit: 640m
+    mem_limit: 512m
+    memswap_limit: 512m
     cpus: '0.5'
     command:
       - -c
@@ -667,29 +667,39 @@ services:
     cpus: '0.2'
 
   # ===================================================================
-  # dbt-docs - static file server for `dbt docs generate`'s output
-  # (dbt/target/{index.html,manifest.json,catalog.json}). Deliberately
-  # split from the airflow-scheduler container that actually runs dbt
-  # (generation needs the dbt CLI + a warehouse connection; serving is
-  # just static files) - nginx:alpine has neither, hence the near-zero
-  # mem_limit versus every other service in this file. Not started by
-  # `docker compose up` - opt in via `docker compose --profile
-  # documentation up -d dbt-docs`, same pattern as the generator profile.
-  # dbt/target is regenerated on demand (gitignored) - if it's empty/stale,
-  # regenerate first: see docs/DBT_MODEL.md §10.
+  # dbt-docs - generates AND serves dbt's docs site in one container
+  # (dbt deps && dbt docs generate, then python3 -m http.server - see
+  # config/dbt-docs/entrypoint.sh). One command is enough:
+  # `docker compose --profile documentation up -d dbt-docs` always produces
+  # a fresh site, no separate manual generate step needed first. Runs its
+  # own dbt CLI directly against Postgres rather than `docker exec`-ing
+  # into airflow-scheduler from inside this container - that would need the
+  # host's Docker socket mounted in, handing this container control over
+  # every container on the host for the sake of a static-docs viewer, a
+  # disproportionate privilege expansion this project deliberately avoids.
   # ===================================================================
   dbt-docs:
-    image: nginx:alpine
+    build:
+      context: ./config/dbt-docs
     container_name: dbt-docs
     ports:
       - "9000:80"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-iot_database}
+      PIPELINE_DB_USER: ${PIPELINE_DB_USER:-pipeline_rw}
+      PIPELINE_DB_PASSWORD: ${PIPELINE_DB_PASSWORD}
     volumes:
-      - ./dbt/target:/usr/share/nginx/html:ro
+      - ./dbt:/opt/dbt:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - airflow_network
-    mem_limit: 32m
-    memswap_limit: 32m
-    cpus: '0.1'
+    mem_limit: 160m
+    memswap_limit: 160m
+    cpus: '0.15'
     profiles: ["documentation"]
 
 networks:
