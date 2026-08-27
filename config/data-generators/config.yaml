@@ -68,15 +68,9 @@ products:
 weather:
   poll_interval_hours: 1               # station locations now live in reference.weather_stations
 
-kafka:
-  topics:
-    customer_events: iot.customer_events
-    product_events: iot.product_events
-    purchase_order_events: iot.purchase_order_events
-    product_on_order_events: iot.product_on_order_events
-    invoice_events: iot.invoice_events
-    inventory_changes: iot.inventory_changes
-    truck_fleet_events: iot.truck_fleet_events
-    truck_position_events: iot.truck_position_events
-  partitions_per_topic: 2
-  replication_factor: 1
+# No kafka: section here - topic names are hardcoded per-generator-module
+# constants (data_generators/generators/*.py), never read from this file,
+# and topic provisioning (partition/replication count) lives in
+# config/kafka/topics.yml instead, since it's Kafka-infrastructure config,
+# not a generator hyperparameter - see docs/ARCHITECTURE.md's Kafka
+# partitioning section.

@@ -59,11 +59,29 @@ OpenWeatherMap ──(hourly, Airflow PythonOperator, not Spark)──► iot.we
 
 **Notes:**
 - All Postgres access — bronze writes, silver reads/writes, everything — goes through **parameterized `psycopg2`**,
-not Spark's JDBC connector. 
+not Spark's JDBC connector.
 - `config/spark/Dockerfile` deliberately has no JDBC driver: it bakes in the Kafka
-connector jars (checksum-verified against Maven Central at build time) and `psycopg2-binary`. 
-- This is what makesidempotent `INSERT ... ON CONFLICT` appends and PostGIS `ST_MakePoint`/`ST_Y`/`ST_X` calls possible — Spark's
-native JDBC writer can do neither.
+connector jars (checksum-verified against Maven Central at build time) and `psycopg2-binary`.
+- This is because Spark's native JDBC **writer** (`df.write.jdbc(...)`) can do neither idempotent upserts nor
+PostGIS function calls — two separate limitations, both traced to the same root cause:
+  - **No upsert support.** Spark's JDBC writer only implements `append`/`overwrite`/`ignore`/`errorifexists`.
+    `append` mode (`JdbcUtils.savePartition`) generates one fixed statement per dialect — a plain
+    `INSERT INTO table (col1, col2, ...) VALUES (?, ?, ...)`, batched — with no extension point for an
+    `ON CONFLICT (...) DO UPDATE/DO NOTHING` clause. Every `*_to_silver.py` upsert and every idempotent bronze
+    append (`ON CONFLICT DO NOTHING`, needed for safe Kafka-replay) depends on exactly that clause, so the
+    native writer can't express them at all — only a staging-table-plus-manual-merge workaround (which just
+    reintroduces `psycopg2` for the step that matters) or a custom `JdbcDialect` subclass would work around it.
+  - **No way to wrap a value in a function call.** The same fixed `INSERT ... VALUES (?, ?, ...)` template binds
+    each column positionally as a literal JDBC parameter. A `GEOGRAPHY(POINT,4326)` column needs
+    `ST_MakePoint(lon, lat)::geography` computed server-side — the writer has no mechanism to wrap a `?`
+    placeholder in a function call, only bind a literal to it.
+  - Both stem from the same design: Spark's JDBC writer is a fixed literal-value INSERT template with no
+    SQL-injection point (by design, for safety) — exactly what makes it unable to express either case.
+  - **This limitation is specific to the writer.** Spark's JDBC *reader* (`spark.read.jdbc(...)`, with
+    `partitionColumn`/`numPartitions`/`lowerBound`/`upperBound`) is just parameterized, range-split `SELECT`s —
+    neither the upsert nor the geometry-function problem applies to reads. A JDBC-based distributed read
+    remains a legitimate option (e.g. for demonstrating genuine Spark-side read parallelism on the silver jobs)
+    with writes staying on `psycopg2` regardless of whether reads go distributed.
 
 ## Why streaming vs. batch is split the way it is
 

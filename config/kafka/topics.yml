@@ -1,0 +1,23 @@
+# Single source of truth for Kafka topic provisioning - read once at stack
+# startup by the kafka-init service (create_topics.py, this directory).
+# Kafka's own broker-side auto-create defaults to num.partitions=1, which
+# left every topic single-partition despite this project having declared
+# "2 partitions" as an intent since its very first commit (previously in
+# data_generators/config.yaml's kafka.partitions_per_topic key, which was
+# never actually wired to anything) - see docs/ARCHITECTURE.md's Kafka
+# partitioning section for the full story.
+#
+# Not read by data_generators - topic *names* are hardcoded per-generator
+# -module constants there (data_generators/generators/*.py); this file is
+# provisioning-only and is never a per-generator hyperparameter.
+replication_factor: 1
+partitions_per_topic: 2
+topics:
+  - iot.customer_events
+  - iot.product_events
+  - iot.purchase_order_events
+  - iot.product_on_order_events
+  - iot.invoice_events
+  - iot.inventory_changes
+  - iot.truck_fleet_events
+  - iot.truck_position_events

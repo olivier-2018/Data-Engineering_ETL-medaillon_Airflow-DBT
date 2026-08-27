@@ -173,12 +173,24 @@ def run_ingestion(
         # the ordinary "no new messages" case (which returns cleanly above).
         # Confirmed by testing: this is exactly what happens after Kafka
         # retention/topic state changes underneath an existing watermark.
-        if "is after the ending offset" in str(exc):
+        stale_watermark_reasons = (
+            "is after the ending offset",
+            # Raised when a topic's partition count grows (e.g. widened from 1
+            # to 2 partitions) after this table's control.kafka_offsets rows
+            # were written for the old, smaller partition set - Spark's Kafka
+            # batch source requires startingOffsets to name every currently
+            # -assigned partition, and the new one has no stored watermark yet.
+            # Confirmed by testing: widening a topic live triggers exactly
+            # this assertion on the very next run.
+            "you must specify all TopicPartitions",
+        )
+        if any(reason in str(exc) for reason in stale_watermark_reasons):
             logger.warning(
                 "Stored offset watermark for topic=%s is stale (points past what the "
-                "topic can currently serve). Resetting it and skipping this run - the "
-                "next run re-ingests from the earliest available offset, which is safe "
-                "since bronze appends are idempotent (ON CONFLICT DO NOTHING).",
+                "topic can currently serve, or is missing a newly-added partition). "
+                "Resetting it and skipping this run - the next run re-ingests from the "
+                "earliest available offset, which is safe since bronze appends are "
+                "idempotent (ON CONFLICT DO NOTHING).",
                 topic,
             )
             reset_offsets(topic)
