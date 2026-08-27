@@ -84,6 +84,25 @@ def make_bronze_ingestion_dag(
                 # UI") to a stable, published address instead of the random
                 # container ID - see docs/OBSERVABILITY.md.
                 "spark.driver.host": "airflow-scheduler",
+                # Only ingest_purchase_order_events.py's distributed=True
+                # foreachPartition path actually needs executors to `import
+                # shared_ingestion_utils` (the other 6 domains stay on the
+                # driver-side-only default path) - set for all 7 anyway since
+                # they share this one factory/conf and it's harmless for the
+                # ones that don't use it. Same rationale as
+                # silver_purchase_orders_dag.py's own PYTHONPATH addition.
+                "spark.executorEnv.PYTHONPATH": "/opt/spark-batch-jobs/bronze_ingestion",
+                # Same reasoning as silver_purchase_orders_dag.py's own
+                # addition (see docs/SPARK_PROJECT.md §7 Recipe B): forces
+                # the driver to wait for 100% of requested executors to
+                # register before scheduling any task, removing the
+                # registration-timing race that can otherwise put both of
+                # ingest_purchase_order_events.py's repartition(2) write
+                # tasks on the same executor. Set for all 7 domains anyway
+                # since they share this one conf - harmless small (<=3s)
+                # startup wait for the 6 that don't use the distributed path.
+                "spark.scheduler.minRegisteredResourcesRatio": "1.0",
+                "spark.scheduler.maxRegisteredResourcesWaitingTime": "3s",
             },
             outlets=[outlet],
         )

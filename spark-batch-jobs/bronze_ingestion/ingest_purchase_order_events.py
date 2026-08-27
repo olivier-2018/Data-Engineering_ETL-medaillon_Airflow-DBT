@@ -31,4 +31,8 @@ if __name__ == "__main__":
         schema=SCHEMA,
         columns=COLUMNS,
         conflict_cols="event_id, event_at",
+        # Flagship job for the repartition+foreachPartition distributed-write
+        # demo (see docs/ARCHITECTURE.md) - the other 6 bronze domains stay
+        # on run_ingestion()'s default single-threaded path, unchanged.
+        distributed=True,
     )

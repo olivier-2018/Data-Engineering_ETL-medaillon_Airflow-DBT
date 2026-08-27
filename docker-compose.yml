@@ -160,6 +160,19 @@ services:
     environment:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_PUBLIC_DNS=localhost
+      # spark.deploy.spreadOut is Master-level, not per-application, so it
+      # can't live in a job's own SPARK_CONF - it has to be a JVM system
+      # property on the Master process itself. Unlike SPARK_MASTER_HOST/
+      # PORT/WEBUI_PORT (only translated into CLI flags by start-master.sh,
+      # which this project's command: bypasses - see docs/SPARK_PROJECT.md
+      # §4), SPARK_MASTER_OPTS is read directly by spark-class itself for
+      # the Master case, so it applies here regardless. Set explicitly to
+      # true (already Spark's own default) so the "spread each app's
+      # requested cores across as many workers as possible" behavior this
+      # project's executor-placement docs (docs/SPARK_PROJECT.md) describe
+      # is a documented decision, not an unstated default. To be verified
+      # live once the stack is back up - see docs/SPARK_PROJECT.md §7.
+      - SPARK_MASTER_OPTS=-Dspark.deploy.spreadOut=true
       # Postgres/Kafka connection info for psycopg2-based ingest/silver jobs.
       # Needed here (not just on the workers) because a --deploy-mode cluster
       # driver can be scheduled on any node, and client-mode jobs invoked
@@ -528,6 +541,7 @@ services:
       - ./data-airflow-logs:/opt/airflow/logs
       - ./config/data-generators/config.yaml:/opt/config/config.yaml:ro
       - ./config/airflow/airflow_config.yml:/opt/config/airflow_config.yml:ro
+      - ./config/kafka/topics_config.yml:/opt/config/kafka_topics.yml:ro
     depends_on:
       - airflow-init
     networks:

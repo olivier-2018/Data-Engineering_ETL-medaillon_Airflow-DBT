@@ -23,6 +23,25 @@ SPARK_CONF = {
     "spark.cores.max": "2",
     "spark.ui.port": "4041",
     "spark.driver.host": "airflow-scheduler",
+    # purchase_orders_to_silver.py's foreachPartition write path needs
+    # executors to `import shared_utils` - no executor has ever needed to
+    # import this module before (every prior shared_utils/
+    # shared_ingestion_utils call was driver-side only), so this wasn't
+    # needed until now. The file already exists at this identical path on
+    # every executor container (spark-worker-1/2 bind-mount
+    # ./spark-batch-jobs:/opt/spark-batch-jobs:ro, same as the driver) -
+    # this just makes it importable there too.
+    "spark.executorEnv.PYTHONPATH": "/opt/spark-batch-jobs/silver_processing",
+    # Forces the driver to wait until 100% of the requested executor
+    # resources (both 1-core executors, per spark.cores.max=2 + the
+    # cluster's spreadOut=true) have registered before scheduling ANY
+    # task - without this, a registration-timing race can let both of
+    # repartition(2)'s write tasks land on the same executor (confirmed
+    # happening in practice), running sequentially on its 1 core instead
+    # of genuinely in parallel across both. See docs/SPARK_PROJECT.md §7
+    # Recipe B.
+    "spark.scheduler.minRegisteredResourcesRatio": "1.0",
+    "spark.scheduler.maxRegisteredResourcesWaitingTime": "3s",
 }
 
 with DAG(

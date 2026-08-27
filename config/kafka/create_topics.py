@@ -1,6 +1,6 @@
 """One-shot Kafka topic provisioning, run by the kafka-init service at every
 stack startup (not just a fresh one - safe to re-run, see below). Reads
-topics.yml (this directory) and, per topic: creates it with the configured
+topics_config.yml (this directory) and, per topic: creates it with the configured
 partition count if missing, or raises its partition count via
 create_partitions() if it already exists with fewer partitions than
 configured. Never lowers partition count (Kafka itself doesn't support
@@ -20,7 +20,7 @@ from confluent_kafka.admin import AdminClient, NewPartitions, NewTopic
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = os.environ.get("KAFKA_TOPICS_CONFIG", "/app/topics.yml")
+CONFIG_PATH = os.environ.get("KAFKA_TOPICS_CONFIG", "/app/topics_config.yml")
 
 
 def _connect(bootstrap: str) -> tuple[AdminClient, dict]:

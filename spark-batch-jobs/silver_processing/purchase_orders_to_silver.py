@@ -29,12 +29,21 @@ from __future__ import annotations
 import json
 import logging
 
+from pyspark import TaskContext
 from pyspark.sql import Row
 from pyspark.sql.functions import coalesce, col, lag, min as spark_min, row_number
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType, TimestampType
 from pyspark.sql.window import Window
 
-from shared_utils import fetch_incremental, get_spark_session, read_watermark, route_errors, upsert, write_watermark
+from shared_utils import (
+    fetch_incremental,
+    get_spark_session,
+    read_partitions_per_topic,
+    read_watermark,
+    route_errors,
+    upsert_partition,
+    write_watermark,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -184,25 +193,48 @@ def main() -> None:
             .withColumn("created_at", coalesce(col("created_at"), col("earliest_event_at")))
         )
 
-        silver_rows = [
-            (
-                r.purchase_order_id, r.customer_id, r.status, r.delivery_address, r.contact_tel,
-                r.invoice_address, r.vat_number, r.target_delivery_date, r.truck_id, r.zone_id,
-                r.event_at, r.created_at,
+        def _write_partition(rows_iter) -> None:
+            rows = [
+                (
+                    r.purchase_order_id, r.customer_id, r.status, r.delivery_address, r.contact_tel,
+                    r.invoice_address, r.vat_number, r.target_delivery_date, r.truck_id, r.zone_id,
+                    r.event_at, r.created_at,
+                )
+                for r in rows_iter
+            ]
+            upsert_partition(
+                SILVER_TABLE,
+                key_cols=["purchase_order_id"],
+                set_cols=[
+                    "customer_id", "status", "delivery_address", "contact_tel", "invoice_address",
+                    "vat_number", "target_delivery_date", "truck_id", "zone_id", "updated_at",
+                ],
+                rows_iter=rows,
+                coalesce_cols=["created_at"],
             )
-            for r in final.collect()
-        ]
-        upsert(
-            SILVER_TABLE,
-            key_cols=["purchase_order_id"],
-            set_cols=[
-                "customer_id", "status", "delivery_address", "contact_tel", "invoice_address",
-                "vat_number", "target_delivery_date", "truck_id", "zone_id", "updated_at",
-            ],
-            rows=silver_rows,
-            coalesce_cols=["created_at"],
-        )
-        logger.info("Upserted %d purchase order(s) into %s", len(silver_rows), SILVER_TABLE)
+            # This runs on the executor, in its own separate Python worker
+            # process - the driver's logging.basicConfig() above doesn't
+            # propagate there, so without configuring logging locally this
+            # debug call would be silently swallowed (no handler, default
+            # WARNING level). basicConfig() is idempotent (no-ops if a
+            # handler already exists), safe to call on every partition
+            # invocation. Visible via each executor's own work-dir stdout
+            # file on the worker container - Airflow's task log only
+            # captures the driver's own stdout, not executors'.
+            logging.basicConfig(level=logging.DEBUG)
+            logger.debug("partition %d wrote %d row(s)", TaskContext.get().partitionId(), len(rows))
+
+        # repartition(N) (round-robin, no key column - guarantees an
+        # exact-or-off-by-one balanced split) + foreachPartition gives N
+        # genuinely concurrent Spark tasks, each opening its own psycopg2
+        # connection and writing its slice independently - visible as N
+        # parallel tasks in the Spark UI. N comes from the same
+        # partitions_per_topic Kafka's own topics were provisioned with
+        # (config/kafka/topics_config.yml via read_partitions_per_topic()),
+        # not a second, independently-drifting literal.
+        row_count = final.count()
+        final.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
+        logger.info("Upserted up to %d purchase order(s) into %s", row_count, SILVER_TABLE)
 
     new_watermark = df.agg({"ingested_at": "max"}).collect()[0][0]
     write_watermark(BRONZE_TABLE_NAME, new_watermark)

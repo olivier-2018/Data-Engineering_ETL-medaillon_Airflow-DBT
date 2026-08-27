@@ -13,6 +13,6 @@ FROM python:3.12-slim
 RUN pip install --no-cache-dir confluent-kafka==2.15.0 pyyaml==6.0.2
 
 WORKDIR /app
-COPY create_topics.py topics.yml ./
+COPY create_topics.py topics_config.yml ./
 
 ENTRYPOINT ["python3", "create_topics.py"]

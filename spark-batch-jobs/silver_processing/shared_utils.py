@@ -19,10 +19,13 @@ import os
 from datetime import datetime
 
 import psycopg2
+import yaml
 from psycopg2.extras import execute_values
 from pyspark.sql import SparkSession
 
 logger = logging.getLogger(__name__)
+
+KAFKA_TOPICS_CONFIG_PATH = os.environ.get("KAFKA_TOPICS_CONFIG_PATH", "/opt/config/kafka_topics.yml")
 
 
 def get_spark_session(app_name: str) -> SparkSession:
@@ -144,3 +147,35 @@ def upsert(
                 template="(" + ", ".join(["%s"] * len(all_cols)) + ")",
             )
         conn.commit()
+
+
+def upsert_partition(
+    table: str,
+    key_cols: list[str],
+    set_cols: list[str],
+    rows_iter,
+    coalesce_cols: list[str] | None = None,
+) -> None:
+    """foreachPartition-compatible wrapper around upsert(): takes this
+    partition's Row iterator (not the full batch collected to the driver),
+    materializes it to a list, and delegates to upsert() unchanged - each
+    partition opens and closes its own psycopg2 connection via upsert()'s
+    own pg_conn(), so N partitions running concurrently on N Spark executor
+    cores means N genuinely concurrent connections/transactions, not one
+    shared connection. Must return None: foreachPartition is side-effect
+    -only and discards any return value."""
+    rows = list(rows_iter)
+    if not rows:
+        return
+    upsert(table, key_cols, set_cols, rows, coalesce_cols=coalesce_cols)
+
+
+def read_partitions_per_topic() -> int:
+    """Reads config/kafka/topics_config.yml's partitions_per_topic (mounted
+    read-only into airflow-scheduler at KAFKA_TOPICS_CONFIG_PATH) - the
+    same value kafka-init uses to provision the Kafka topics themselves
+    (see docs/ARCHITECTURE.md), reused here as N for repartition(N) so a
+    job's write-side parallelism matches the topic's own partition count
+    instead of a second, independently-drifting literal."""
+    with open(KAFKA_TOPICS_CONFIG_PATH) as f:
+        return yaml.safe_load(f)["partitions_per_topic"]
