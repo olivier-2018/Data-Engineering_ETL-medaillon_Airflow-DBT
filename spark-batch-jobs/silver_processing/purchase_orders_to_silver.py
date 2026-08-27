@@ -143,7 +143,13 @@ def main() -> None:
         route_errors(ERROR_TABLE, error_rows)
 
     if valid_rows:
-        valid_df = spark.createDataFrame(valid_rows).drop("prev_status")
+        # Explicit schema, not inferred: inferring from `valid_rows` (a plain
+        # list[Row]) re-derives types from raw Python values and fails
+        # outright with CANNOT_DETERMINE_TYPE whenever a nullable column
+        # (e.g. truck_id, target_delivery_date) happens to be None in every
+        # surviving row of a small batch - `with_prev`'s schema is already
+        # known and correct, so reuse it instead of re-inferring.
+        valid_df = spark.createDataFrame(valid_rows, schema=with_prev.schema).drop("prev_status")
 
         created_rows = (
             valid_df.filter(col("status") == "created")
