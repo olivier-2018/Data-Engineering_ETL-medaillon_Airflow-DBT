@@ -270,3 +270,67 @@ itself, with one exception — `weather_enrichment_dag.py`'s `PythonOperator` wr
 
 **Metadata**: Airflow's own DAG/task-instance/log state lives entirely in `airflow-postgres`, a separate
 database from the pipeline's own data.
+
+## 12. Docker compose parameters
+
+### airflow-init service
+
+- AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE
+      # Airflow's DAG-discovery "safe mode" pre-filters dags/ files: a file is
+      # only parsed as a possible DAG if its raw text contains the literal
+      # substring "airflow" and either "dag" or "asset" (case-insensitive) -
+      # a fast-path heuristic for large codebases with many non-DAG .py files
+      # mixed in (see airflow.utils.file.might_contain_dag_via_default_heuristic).
+      # Set here for completeness/other DagBag call sites, but note this does
+      # NOT reach the dag-processor's actual per-file parsing subprocess in
+      # Airflow 3.0.3 - airflow/dag_processing/processor.py's _parse_file()
+      # hardcodes safe_mode=True rather than reading this config value, so
+      # every DAG file's own source must independently satisfy the heuristic
+      # regardless of this setting (see airflow/dags/common/spark_ingestion_dag_factory.py
+      # for how the per-domain bronze-ingestion files do this).
+
+- AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      # Airflow's own default is to create every newly-discovered DAG paused,
+      # requiring a manual unpause per DAG. This project wants every DAG
+      # running the moment Airflow starts, so every new DAG is created
+      # already unpaused instead. Only affects DAGs at the moment they're
+      # first registered in the metadata DB - an already-registered DAG's
+      # paused/unpaused state is a separate, persisted toggle this setting
+      # doesn't touch retroactively.
+
+- AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"      
+  # Every task runs in a subprocess that talks to this URL via the Task SDK
+      # (Airflow 3's "Execution API"), served by airflow-api-server at /execution/.
+      # Left unset, it defaults to localhost - unreachable from airflow-scheduler's
+      # own container, so every single task instance fails immediately with
+      # httpx.ConnectError before ever really starting (confirmed by testing).
+      
+-       AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?AIRFLOW_API_SECRET_KEY must be set in .env}
+      # Must match across every component - the scheduler signs each task's
+      # internal Execution API JWT with these, and airflow-api-server verifies
+      # it. Left unset, each container generates its own random value and every
+      # task fails with 403 Forbidden (confirmed by testing).
+
+- AIRFLOW_CONN_SPARK_DEFAULT: "spark://spark%3A%2F%2Fspark-master:7077"
+      # SparkSubmitHook builds --master as "{conn.host}:{conn.port}" - it does NOT
+      # prepend the connection's conn_type/scheme itself. So the scheme has to be
+      # double-encoded into the host segment (spark%3A%2F%2Fspark-master decodes
+      # to host="spark://spark-master"), or every spark-submit gets invoked with
+      # "--master spark-master:7077" (missing scheme) and fails to parse the
+      # master URL entirely - confirmed by testing.
+
+- POSTGRES_HOST: postgres
+      # For client-mode SparkSubmitOperator jobs, whose driver runs inside
+      # airflow-scheduler itself - the psycopg2-based batch scripts read
+      # these plain env vars directly, same convention as the Spark nodes.
+
+### airflow-api-server service
+
+- command: airflow api-server --workers 1
+    # --workers 1: confirmed by testing that both the default (4) and even 2
+    # workers crash-loop under this container's memory budget ("Child
+    # process died" repeatedly); --workers 1 ran clean and stayed up. Fine
+    # for this demo's UI concurrency (single user). mem_limit bumped
+    # 512m->768m for headroom since even 1 worker sat close to 512m.
+
+    
