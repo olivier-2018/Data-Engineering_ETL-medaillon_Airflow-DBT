@@ -221,10 +221,7 @@ def _bootstrap(producer, cfg: dict, scheduler: Scheduler, state: dict):
     for order in list(orders.values()):
         if order.status == "created":
             order.create_invoice(producer)
-            amount = round(
-                sum(products[pid].unit_price * qty for pid, qty in order.line_items if pid in products), 2
-            )
-            invoice = Invoice.create(producer, cfg, scheduler, order, amount, products)
+            invoice = Invoice.create(producer, cfg, scheduler, order, order.total_amount(products), products)
             invoices[invoice.invoice_id] = invoice
 
     dispatcher = Dispatcher(cfg, trucks, zones)
@@ -319,8 +316,7 @@ def main() -> None:
                     customer.open_order_ids.add(order.purchase_order_id)
 
                     order.create_invoice(producer)
-                    amount = round(sum(products[pid].unit_price * qty for pid, qty in order.line_items), 2)
-                    invoice = Invoice.create(producer, cfg, scheduler, order, amount, products)
+                    invoice = Invoice.create(producer, cfg, scheduler, order, order.total_amount(products), products)
                     invoices[invoice.invoice_id] = invoice
                 except Exception:
                     logger.exception("Order/invoice creation raised")

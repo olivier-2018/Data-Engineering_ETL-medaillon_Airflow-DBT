@@ -158,6 +158,18 @@ class PurchaseOrder(Lifecycle):
     def create_invoice(self, producer) -> None:
         self.set_status("invoiced", producer, TOPIC, lambda o: o._event())
 
+    def total_amount(self, products: dict) -> float:
+        """Sum of unit_price * qty across every line item - the amount the
+        linked Invoice should be created with. `if pid in products` guards
+        against a product removed from the catalog between order-creation
+        and invoicing (never happens today - products are never deleted -
+        but line_items' product_ids only exist because they were sampled
+        from products.keys() at order-creation time, so this is defensive,
+        not load-bearing)."""
+        return round(
+            sum(products[pid].unit_price * qty for pid, qty in self.line_items if pid in products), 2
+        )
+
     def mark_paid(self, producer, products: dict) -> None:
         self.set_status("paid", producer, TOPIC, lambda o: o._event())
         for product_id, qty in self.line_items:

@@ -194,8 +194,8 @@ services:
       - airflow_network
     # With --deploy-mode cluster, driver JVMs run on workers, not here - the
     # master only coordinates, hence the much smaller footprint than before.
-    mem_limit: 768m
-    memswap_limit: 768m
+    mem_limit: 512m
+    memswap_limit: 512m
     cpus: '0.5'
     healthcheck:
       # curl isn't installed in config/spark/Dockerfile's final image (it's
@@ -221,7 +221,7 @@ services:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_PUBLIC_DNS=localhost
       - SPARK_WORKER_CORES=4
-      - SPARK_WORKER_MEMORY=1600m
+      - SPARK_WORKER_MEMORY=1500m
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-iot_database}
@@ -239,8 +239,8 @@ services:
       - spark-master
     networks:
       - airflow_network
-    mem_limit: 2000m
-    memswap_limit: 2000m
+    mem_limit: 1500m
+    memswap_limit: 1500m
     cpus: '2.5'
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081').read()"]
@@ -267,7 +267,7 @@ services:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_PUBLIC_DNS=localhost
       - SPARK_WORKER_CORES=4
-      - SPARK_WORKER_MEMORY=1600m
+      - SPARK_WORKER_MEMORY=1500m
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-iot_database}
