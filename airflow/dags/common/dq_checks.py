@@ -11,7 +11,7 @@ def has_new_bronze_data(source_table: str, watermark_key: str) -> bool:
     with pg_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT last_processed_ingested_at FROM control.watermarks WHERE table_name = %s",
+                "SELECT last_processed_ingested_at FROM control.silver_watermarks WHERE table_name = %s",
                 (watermark_key,),
             )
             row = cur.fetchone()

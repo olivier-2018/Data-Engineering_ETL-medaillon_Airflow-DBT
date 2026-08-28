@@ -17,11 +17,12 @@ from airflow.providers.standard.operators.python import ShortCircuitOperator
 
 from common.assets import SILVER_INVENTORY
 from common.dq_checks import has_new_bronze_data
+from common.pipeline_config import SILVER_PROCESSING_SCHEDULE
 
 with DAG(
     dag_id="silver_inventory_dag",
     description="Bronze -> silver for inventory + automatic restock check (§7, §1c)",
-    schedule=timedelta(minutes=10),
+    schedule=SILVER_PROCESSING_SCHEDULE,
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -34,11 +35,23 @@ with DAG(
     )
     run_silver = SparkSubmitOperator(
         task_id="inventory_to_silver",
-        application="/opt/spark-batch-jobs/inventory_to_silver.py",
+        application="/opt/spark-batch-jobs/silver_processing/inventory_to_silver.py",
         name="inventory-to-silver",
         conn_id="spark_default",
         deploy_mode="client",
-        conf={"spark.driver.memory": "512m", "spark.executor.memory": "512m", "spark.cores.max": "2", "spark.ui.port": "4041", "spark.driver.host": "airflow-scheduler"},
+        conf={
+            "spark.driver.memory": "512m",
+            "spark.executor.memory": "512m",
+            "spark.cores.max": "2",
+            "spark.ui.port": "4041",
+            "spark.driver.host": "airflow-scheduler",
+            # Now writes via repartition+foreachPartition - see
+            # silver_purchase_orders_dag.py's identical addition and
+            # docs/SPARK_PROJECT.md for the full rationale.
+            "spark.executorEnv.PYTHONPATH": "/opt/spark-batch-jobs/silver_processing",
+            "spark.scheduler.minRegisteredResourcesRatio": "1.0",
+            "spark.scheduler.maxRegisteredResourcesWaitingTime": "3s",
+        },
         outlets=[SILVER_INVENTORY],
     )
     check_errors = SQLThresholdCheckOperator(
@@ -50,7 +63,7 @@ with DAG(
     )
     restock_check = BashOperator(
         task_id="restock_check",
-        bash_command="cd /opt/spark-batch-jobs/bronze_ingestion && python3 restock_check.py",
+        bash_command="cd /opt/spark-batch-jobs/silver_processing && python3 restock_check.py",
     )
 
     check >> run_silver >> check_errors >> restock_check

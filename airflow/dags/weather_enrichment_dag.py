@@ -1,27 +1,26 @@
 """§8: Airflow-scheduled periodic pull from OpenWeatherMap (current +
-forecast) for the 5 fixed locations in data_generators/config.yaml - NOT a
-Kafka/Spark job, since this domain has no streaming source at all, just a
-REST API to poll. Writes into iot.weather_observations (a hypertable,
-genuinely time-series, just Airflow-populated instead of Spark).
+forecast) for the fixed locations in reference.weather_stations (moved out
+of data_generators/config.yaml per the redesign plan §2a/decision #12 -
+station locations are structural reference data, not a generator
+hyperparameter) - NOT a Kafka/Spark job, since this domain has no streaming
+source at all, just a REST API to poll. Writes into iot.weather_observations
+(a hypertable, genuinely time-series, just Airflow-populated instead of
+Spark).
 
-Config is read inside the task callable (not at DAG-parse/module level) so
-the dag-processor (which only parses this file, never executes task code)
-doesn't need the config.yaml mount - only airflow-scheduler does.
-"""
+Locations are read inside the task callable (not at DAG-parse/module level)
+so the dag-processor (which only parses this file, never executes task
+code) never needs a database connection - only airflow-scheduler does."""
 from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
 
 import psycopg2
-import yaml
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from psycopg2.extras import execute_values
 
 from common.weather_client import fetch_observations
-
-CONFIG_PATH = os.environ.get("CONFIG_PATH", "/opt/config/config.yaml")
 
 
 def _pg_conn():
@@ -34,6 +33,13 @@ def _pg_conn():
     )
 
 
+def _fetch_stations() -> list[dict]:
+    with _pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, lat, lon FROM reference.weather_stations")
+            return [{"name": name, "lat": lat, "lon": lon} for name, lat, lon in cur.fetchall()]
+
+
 def pull_weather(**_context) -> None:
     api_key = os.environ.get("OPENWEATHERMAP_API_KEY", "")
     if not api_key:
@@ -42,8 +48,7 @@ def pull_weather(**_context) -> None:
             "https://openweathermap.org/api and fill it in."
         )
 
-    with open(CONFIG_PATH) as f:
-        locations = yaml.safe_load(f)["weather"]["locations"]
+    locations = _fetch_stations()
 
     all_rows: list[dict] = []
     for location in locations:

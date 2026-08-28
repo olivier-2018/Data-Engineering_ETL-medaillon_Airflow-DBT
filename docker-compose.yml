@@ -59,6 +59,29 @@ services:
       start_period: 30s
 
   # ===================================================================
+  # One-shot Kafka topic provisioning - creates/widens the 8 iot.* topics
+  # to config/kafka/topics.yml's configured partition count. Runs once per
+  # stack startup, then exits; downstream producers/consumers depend on it
+  # completing (condition: service_completed_successfully) rather than just
+  # on Kafka being healthy, since Kafka's own broker-side auto-create
+  # defaults to num.partitions=1 - without this gate, whichever
+  # producer/consumer happened to touch a topic first would still win the
+  # race and leave it single-partition. See docs/ARCHITECTURE.md.
+  # ===================================================================
+  kafka-init:
+    build:
+      context: ./config/kafka
+    container_name: kafka-init
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - airflow_network
+    restart: "no"
+
+  # ===================================================================
   # Kafka UI - browse topics/partitions/consumer groups, inspect messages
   # ===================================================================
   kafka-ui:
@@ -89,15 +112,28 @@ services:
     container_name: data-generator
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOG_LEVEL: ${GENERATOR_LOG_LEVEL:-INFO}  # set DEBUG for per-event tracing (main.py's own header comment)
+      # Read-only, silver+reference schemas only - used solely for
+      # startup state-resume reads (see redesign plan §3/§3c), never a
+      # live per-tick dependency. This is the generator's first-ever DB
+      # connection; it never touches iot (bronze) at all.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-iot_database}
+      GENERATOR_DB_USER: ${GENERATOR_DB_USER:-generator_ro}
+      GENERATOR_DB_PASSWORD: ${GENERATOR_DB_PASSWORD}
     volumes:
-      - ./data_generators/config.yaml:/app/config.yaml:ro
+      - ./config/data-generators/config.yaml:/app/config.yaml:ro
     depends_on:
-      kafka:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
         condition: service_healthy
     networks:
       - airflow_network
-    # Measured steady-state via docker stats: ~16MB RSS, <0.1% CPU - trimmed
-    # from 512m/0.5 accordingly, leaving a still-generous margin.
+    # Was measured at ~16MB RSS/<0.1% CPU under the old flat-dict
+    # implementation; re-measure via `docker stats` once the class-based
+    # rewrite + DB connection are in, real usage will be higher than that.
     mem_limit: 192m
     memswap_limit: 192m
     cpus: '0.15'
@@ -124,6 +160,19 @@ services:
     environment:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_PUBLIC_DNS=localhost
+      # spark.deploy.spreadOut is Master-level, not per-application, so it
+      # can't live in a job's own SPARK_CONF - it has to be a JVM system
+      # property on the Master process itself. Unlike SPARK_MASTER_HOST/
+      # PORT/WEBUI_PORT (only translated into CLI flags by start-master.sh,
+      # which this project's command: bypasses - see docs/SPARK_PROJECT.md
+      # §4), SPARK_MASTER_OPTS is read directly by spark-class itself for
+      # the Master case, so it applies here regardless. Set explicitly to
+      # true (already Spark's own default) so the "spread each app's
+      # requested cores across as many workers as possible" behavior this
+      # project's executor-placement docs (docs/SPARK_PROJECT.md) describe
+      # is a documented decision, not an unstated default. To be verified
+      # live once the stack is back up - see docs/SPARK_PROJECT.md §7.
+      - SPARK_MASTER_OPTS=-Dspark.deploy.spreadOut=true
       # Postgres/Kafka connection info for psycopg2-based ingest/silver jobs.
       # Needed here (not just on the workers) because a --deploy-mode cluster
       # driver can be scheduled on any node, and client-mode jobs invoked
@@ -140,13 +189,13 @@ services:
       - ./data-spark-logs:/opt/spark/logs
       - ./data-spark-master:/tmp/spark-data
       - ./data-spark-checkpoints:/tmp/spark-data/checkpoints
-      - ./data_generators/config.yaml:/opt/config/config.yaml:ro
+      - ./config/data-generators/config.yaml:/opt/config/config.yaml:ro
     networks:
       - airflow_network
     # With --deploy-mode cluster, driver JVMs run on workers, not here - the
     # master only coordinates, hence the much smaller footprint than before.
-    mem_limit: 768m
-    memswap_limit: 768m
+    mem_limit: 512m
+    memswap_limit: 512m
     cpus: '0.5'
     healthcheck:
       # curl isn't installed in config/spark/Dockerfile's final image (it's
@@ -185,13 +234,13 @@ services:
       - ./data-spark-logs:/opt/spark/logs
       - ./data-spark-worker-1:/tmp/spark-data
       - ./data-spark-checkpoints:/tmp/spark-data/checkpoints
-      - ./data_generators/config.yaml:/opt/config/config.yaml:ro
+      - ./config/data-generators/config.yaml:/opt/config/config.yaml:ro
     depends_on:
       - spark-master
     networks:
       - airflow_network
-    mem_limit: 2000m
-    memswap_limit: 2000m
+    mem_limit: 1600m
+    memswap_limit: 1600m
     cpus: '2.5'
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081').read()"]
@@ -231,13 +280,13 @@ services:
       - ./data-spark-logs:/opt/spark/logs
       - ./data-spark-worker-2:/tmp/spark-data
       - ./data-spark-checkpoints:/tmp/spark-data/checkpoints
-      - ./data_generators/config.yaml:/opt/config/config.yaml:ro
+      - ./config/data-generators/config.yaml:/opt/config/config.yaml:ro
     depends_on:
       - spark-master
     networks:
       - airflow_network
-    mem_limit: 1500m
-    memswap_limit: 1500m
+    mem_limit: 1600m
+    memswap_limit: 1600m
     cpus: '2.5'
     healthcheck:
       # Now that --webui-port 8082 makes this container actually listen on
@@ -294,6 +343,9 @@ services:
       --conf spark.cores.max=2
       --conf spark.driver.host=spark-streaming-truck-position
       --conf spark.ui.port=4040
+      --conf spark.executorEnv.PYTHONPATH=/opt/spark-streaming-jobs
+      --conf spark.scheduler.minRegisteredResourcesRatio=1.0
+      --conf spark.scheduler.maxRegisteredResourcesWaitingTime=3s
       /opt/spark-streaming-jobs/ingest_truck_positions.py
     environment:
       - SPARK_PUBLIC_DNS=localhost
@@ -307,19 +359,20 @@ services:
       - ./spark-streaming-jobs:/opt/spark-streaming-jobs:ro
       - ./data-spark-logs:/opt/spark/logs
       - ./data-spark-checkpoints:/tmp/spark-data/checkpoints
+      - ./config/kafka/topics_config.yml:/opt/config/kafka_topics.yml:ro
     depends_on:
       spark-master:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     networks:
       - airflow_network
     # This is the client-mode driver itself (not just a submitter) - it
     # needs real headroom, unlike the now-lightweight spark-master.
-    mem_limit: 1024m
-    memswap_limit: 1024m
+    mem_limit: 768m
+    memswap_limit: 768m
     cpus: '0.5'
     restart: unless-stopped
 
@@ -338,14 +391,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-iot_database}
       PIPELINE_DB_USER: ${PIPELINE_DB_USER:-pipeline_rw}
       PIPELINE_DB_PASSWORD: ${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD must be set in .env}
+      GENERATOR_DB_USER: ${GENERATOR_DB_USER:-generator_ro}
+      GENERATOR_DB_PASSWORD: ${GENERATOR_DB_PASSWORD:?GENERATOR_DB_PASSWORD must be set in .env}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - ./data-postgres:/var/lib/postgresql/data
       - ./config/postgres/initdb:/docker-entrypoint-initdb.d:ro
     networks:
       - airflow_network
-    mem_limit: 640m
-    memswap_limit: 640m
+    mem_limit: 512m
+    memswap_limit: 512m
     cpus: '0.5'
     command:
       - -c
@@ -370,6 +425,8 @@ services:
   airflow-postgres:
     image: postgres:15-alpine
     container_name: airflow-postgres
+    ports:
+      - "5431:5432"   # only for Dev
     environment:
       POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
       POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD must be set in .env}
@@ -382,7 +439,7 @@ services:
     memswap_limit: 384m
     cpus: '0.25'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER:-airflow}"]
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER:-airflow} -d ${AIRFLOW_DB_NAME:-airflow_metadata}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -398,40 +455,16 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__PARALLELISM: 3
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
-      # Airflow's own default is to create every newly-discovered DAG paused,
-      # requiring a manual unpause per DAG. This project wants every DAG
-      # running the moment Airflow starts, so every new DAG is created
-      # already unpaused instead. Only affects DAGs at the moment they're
-      # first registered in the metadata DB - an already-registered DAG's
-      # paused/unpaused state is a separate, persisted toggle this setting
-      # doesn't touch retroactively.
+      AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
-      # Every task runs in a subprocess that talks to this URL via the Task SDK
-      # (Airflow 3's "Execution API"), served by airflow-api-server at /execution/.
-      # Left unset, it defaults to localhost - unreachable from airflow-scheduler's
-      # own container, so every single task instance fails immediately with
-      # httpx.ConnectError before ever really starting (confirmed by testing).
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow_metadata}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?AIRFLOW_FERNET_KEY must be set in .env}
-      # Must match across every component - the scheduler signs each task's
-      # internal Execution API JWT with these, and airflow-api-server verifies
-      # it. Left unset, each container generates its own random value and every
-      # task fails with 403 Forbidden (confirmed by testing).
       AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?AIRFLOW_API_SECRET_KEY must be set in .env}
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?AIRFLOW_JWT_SECRET must be set in .env}
       AIRFLOW_CONN_POSTGRES_IOT: postgresql://${PIPELINE_DB_USER:-pipeline_rw}:${PIPELINE_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-iot_database}
-      # SparkSubmitHook builds --master as "{conn.host}:{conn.port}" - it does NOT
-      # prepend the connection's conn_type/scheme itself. So the scheme has to be
-      # double-encoded into the host segment (spark%3A%2F%2Fspark-master decodes
-      # to host="spark://spark-master"), or every spark-submit gets invoked with
-      # "--master spark-master:7077" (missing scheme) and fails to parse the
-      # master URL entirely - confirmed by testing.
       AIRFLOW_CONN_SPARK_DEFAULT: "spark://spark%3A%2F%2Fspark-master:7077"
       OPENWEATHERMAP_API_KEY: ${OPENWEATHERMAP_API_KEY:-}
-      # For client-mode SparkSubmitOperator jobs, whose driver runs inside
-      # airflow-scheduler itself - the psycopg2-based batch scripts read
-      # these plain env vars directly, same convention as the Spark nodes.
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-iot_database}
@@ -450,11 +483,6 @@ services:
     build:
       context: ./config/airflow
     container_name: airflow-api-server
-    # --workers 1: confirmed by testing that both the default (4) and even 2
-    # workers crash-loop under this container's memory budget ("Child
-    # process died" repeatedly); --workers 1 ran clean and stayed up. Fine
-    # for this demo's UI concurrency (single user). mem_limit bumped
-    # 512m->768m for headroom since even 1 worker sat close to 512m.
     command: airflow api-server --workers 1
     ports:
       - "8090:8080"
@@ -480,6 +508,7 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+    restart: unless-stopped
 
   airflow-scheduler:
     build:
@@ -493,11 +522,13 @@ services:
     # container, so batch starts one above it and auto-increments to
     # 4042/4043 for additional concurrent jobs in this same container. The
     # ceiling of 3 concurrent ports isn't arbitrary: SPARK_WORKER_CORES=4/4
-    # (8 total) minus the streaming job's permanent spark.cores.max=2 leaves 6
-    # free, and every batch job also requests spark.cores.max=2, so at most 3
-    # can hold executors at once regardless of how many DAGs are scheduled -
-    # a 4th queues at Spark Master until a slot frees up (confirmed by
-    # testing). Published so they're reachable from the host.
+    # (8 total) minus the streaming job's permanent spark.cores.max=2 (bumped
+    # back from 1 once iot.truck_position_events was widened to 2 partitions
+    # - see docs/SPARK_PROJECT.md) leaves 6 free, and every batch job also
+    # requests spark.cores.max=2, so at most 3 can hold executors at once
+    # regardless of how many DAGs are scheduled - a 4th queues at Spark
+    # Master until a slot frees up (confirmed by testing). Published so
+    # they're reachable from the host.
     # SPARK_PUBLIC_DNS=localhost below is what makes Spark Master's
     # "Application Detail UI" link actually resolve from a host browser:
     # Spark's WebUI base class reports this env var (when set) as its public
@@ -514,19 +545,22 @@ services:
       - ./spark-batch-jobs:/opt/spark-batch-jobs:ro
       - ./dbt:/opt/dbt:rw
       - ./data-airflow-logs:/opt/airflow/logs
-      - ./data_generators/config.yaml:/opt/config/config.yaml:ro
+      - ./config/data-generators/config.yaml:/opt/config/config.yaml:ro
+      - ./config/airflow/airflow_config.yml:/opt/config/airflow_config.yml:ro
+      - ./config/kafka/topics_config.yml:/opt/config/kafka_topics.yml:ro
     depends_on:
       - airflow-init
     networks:
       - airflow_network
     # Bumped from 1536m/1.0 cpus: up to 3 batch SparkSubmitOperator tasks can
-    # now run concurrently (SPARK_WORKER_CORES=4/4, each job capped at
-    # spark.cores.max=2 -> 6 cores / 2 per job = 3 concurrent), each with its
+    # now run concurrently (SPARK_WORKER_CORES=4/4, streaming job takes 2,
+    # 6 free / 2 per batch job -> 3 concurrent), each with its
     # own real client-mode driver JVM (not just idle-waiting) inside this
     # container.
     mem_limit: 2048m
     memswap_limit: 2048m
     cpus: '2.0'
+    restart: unless-stopped
 
   airflow-dag-processor:
     build:
@@ -537,6 +571,7 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./data-airflow-logs:/opt/airflow/logs
+      - ./config/airflow/airflow_config.yml:/opt/config/airflow_config.yml:ro
     depends_on:
       - airflow-init
     networks:
@@ -544,6 +579,7 @@ services:
     mem_limit: 640m
     memswap_limit: 640m
     cpus: '0.5'
+    restart: unless-stopped
 
   # ===================================================================
   # Observability: Grafana (live truck map + pipeline/gold dashboards)
@@ -649,6 +685,42 @@ services:
     mem_limit: 100m
     memswap_limit: 100m
     cpus: '0.2'
+
+  # ===================================================================
+  # dbt-docs - generates AND serves dbt's docs site in one container
+  # (dbt deps && dbt docs generate, then python3 -m http.server - see
+  # config/dbt-docs/entrypoint.sh). One command is enough:
+  # `docker compose --profile documentation up -d dbt-docs` always produces
+  # a fresh site, no separate manual generate step needed first. Runs its
+  # own dbt CLI directly against Postgres rather than `docker exec`-ing
+  # into airflow-scheduler from inside this container - that would need the
+  # host's Docker socket mounted in, handing this container control over
+  # every container on the host for the sake of a static-docs viewer, a
+  # disproportionate privilege expansion this project deliberately avoids.
+  # ===================================================================
+  dbt-docs:
+    build:
+      context: ./config/dbt-docs
+    container_name: dbt-docs
+    ports:
+      - "9000:80"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-iot_database}
+      PIPELINE_DB_USER: ${PIPELINE_DB_USER:-pipeline_rw}
+      PIPELINE_DB_PASSWORD: ${PIPELINE_DB_PASSWORD}
+    volumes:
+      - ./dbt:/opt/dbt:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - airflow_network
+    mem_limit: 160m
+    memswap_limit: 160m
+    cpus: '0.15'
+    profiles: ["documentation"]
 
 networks:
   airflow_network:

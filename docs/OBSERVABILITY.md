@@ -33,8 +33,9 @@ This took two separate fixes to get working from a host browser at all (both con
 `kafka:9092` broker as cluster `local`.
 
 Use it to:
-- Browse the 6 topics (`iot.customer_events`, `iot.product_events`, `iot.sales_order_events`,
-  `iot.payment_events`, `iot.inventory_changes`, `iot.truck_position_events`), their partitions, and message counts.
+- Browse the 8 topics (`iot.customer_events`, `iot.product_events`, `iot.purchase_order_events`,
+  `iot.product_on_order_events`, `iot.invoice_events`, `iot.inventory_changes`, `iot.truck_fleet_events`,
+  `iot.truck_position_events`), their partitions, and message counts.
 - Open a topic's **Messages** tab to tail/inspect live JSON payloads as the generator (or a replay) publishes them
   — the fastest way to confirm the generator is actually producing before chasing a downstream ingestion bug.
 - Inspect consumer groups/offsets for the batch ingestion jobs (`ingest_*` Spark jobs read via
@@ -55,12 +56,12 @@ show "Data source not found" (this happened during development — see `docs/DEP
 
 | Dashboard | What it shows |
 |---|---|
-| **Live Truck Map** | A Geomap panel plotting `silver.truck_positions_current` (filtered to non-delivered shipments) — the live view of where every truck currently is, refreshed on a 10s auto-refresh. Below it, a table of the 50 most recently updated shipments. |
-| **Pipeline Health** | `control.watermarks` lag per domain (how far behind each silver job is), error-row counts per domain over the last 15 minutes, and bronze ingestion volume over the last 6 hours. |
-| **Gold KPIs** | Revenue by destination country (last 24h), average time-to-destination across delivered shipments, and a table of products currently below their restock threshold. |
+| **Live Truck Map** | A Geomap panel plotting `silver.truck_current_position` — the live view of where every truck currently is, color-coded by `truck_status`, on a fixed initial view (so zoom/pan survives the 10s auto-refresh). Below it, a table of trucks currently on a run (not `free`), with a live count of orders aboard each. |
+| **Pipeline Health** | `control.silver_watermarks` lag per domain (how far behind each silver job is), error-row counts per domain over the last 15 minutes, and bronze ingestion volume over the last 6 hours. |
+| **Gold KPIs** | Revenue by delivery zone (last 24h), average time-to-destination across delivered orders, and a table of products currently below their restock threshold. |
 
-Every panel's query was verified by executing it directly through Grafana's own `/api/ds/query` endpoint (the
-same code path the browser UI uses) against real data — not just checked for provisioning without error.
+Every panel's query is verified directly against the live schema (not just checked for provisioning without
+error) whenever the underlying tables change.
 
 ### Adding or editing a dashboard
 

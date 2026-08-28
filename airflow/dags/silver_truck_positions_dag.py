@@ -14,11 +14,12 @@ from airflow.providers.standard.operators.python import ShortCircuitOperator
 
 from common.assets import SILVER_TRUCK_POSITIONS
 from common.dq_checks import has_new_bronze_data
+from common.pipeline_config import TRUCK_POSITIONS_SCHEDULE
 
 with DAG(
     dag_id="silver_truck_positions_dag",
     description="Bronze -> silver for truck positions, bounding-box + orphan-order validation (§7)",
-    schedule=timedelta(minutes=2),
+    schedule=TRUCK_POSITIONS_SCHEDULE,
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -31,7 +32,7 @@ with DAG(
     )
     run_silver = SparkSubmitOperator(
         task_id="truck_positions_to_silver",
-        application="/opt/spark-batch-jobs/truck_positions_to_silver.py",
+        application="/opt/spark-batch-jobs/silver_processing/truck_positions_to_silver.py",
         name="truck-positions-to-silver",
         conn_id="spark_default",
         deploy_mode="client",

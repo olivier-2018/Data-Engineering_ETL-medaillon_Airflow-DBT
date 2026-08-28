@@ -3,6 +3,10 @@
 # Does NOT start data-generator - that's an intentional separate step
 # (`docker compose up -d data-generator --profile generator`) so synthetic
 # load is something you choose to turn on, not something that happens implicitly.
+# DOES start dbt-docs (Stage 8) - unlike the generator, there's no downside
+# to always having a fresh docs site available; it just regenerates and
+# serves static files, no ongoing synthetic load or side effects on the rest
+# of the pipeline.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -55,15 +59,22 @@ wait_healthy airflow-api-server
 echo "=== Stage 7: Observability (Grafana + Loki/Promtail) ==="
 docker compose up -d grafana loki promtail
 
+echo "=== Stage 8: dbt docs (generates fresh docs, then serves them) ==="
+docker compose --profile documentation up -d --build dbt-docs
+
 cat <<EOF
 
 === Stack is up ===
+Kafka UI:           http://localhost:8089
+Airflow UI:         http://localhost:8090
 Spark Master UI:    http://localhost:8080
 Spark Worker 1 UI:  http://localhost:8081
 Spark Worker 2 UI:  http://localhost:8082
-Airflow UI:         http://localhost:8090
-Kafka UI:           http://localhost:8089
+dbt docs:           http://localhost:9000
 Grafana:            http://localhost:3000
+
+To get Airflow credentials:
+  docker compose exec airflow-api-server cat /opt/airflow/simple_auth_manager_passwords.json.generated
 
 To start generating synthetic data:
   docker compose --profile generator up -d data-generator

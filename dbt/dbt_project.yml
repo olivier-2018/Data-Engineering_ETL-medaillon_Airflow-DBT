@@ -22,7 +22,7 @@ models:
       # silver.* (already Spark-written) and land in the profile's default
       # target schema (gold), prefixed stg_ by convention, rather than
       # requiring a brand-new Postgres schema just for pass-through views.
-    marts:
+    gold_marts:
       dimensions:
         +materialized: incremental
       facts:

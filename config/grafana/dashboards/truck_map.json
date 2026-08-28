@@ -17,19 +17,19 @@
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT truck_id, shipment_id, order_id, shipment_status, destination_country, ST_Y(geog::geometry) AS latitude, ST_X(geog::geometry) AS longitude, updated_at FROM silver.truck_positions_current WHERE shipment_status != 'delivered'",
+          "rawSql": "SELECT tp.truck_id, tp.truck_status, dz.city AS current_zone_city, ST_Y(tp.geog::geometry) AS latitude, ST_X(tp.geog::geometry) AS longitude, tp.updated_at FROM silver.truck_current_position tp LEFT JOIN reference.delivery_zones dz ON dz.zone_id = tp.current_zone_id",
           "refId": "A"
         }
       ],
       "options": {
-        "view": {"id": "fit"},
+        "view": {"id": "coords", "lat": 46.95, "lon": 8.0, "zoom": 8},
         "layers": [
           {
             "type": "markers",
             "location": {"mode": "coords", "latitude": "latitude", "longitude": "longitude"},
             "config": {
               "style": {
-                "color": {"field": "shipment_status", "fixed": "dark-blue"},
+                "color": {"field": "truck_status", "fixed": "dark-blue"},
                 "size": {"fixed": 8}
               }
             }
@@ -41,13 +41,13 @@
     {
       "id": 2,
       "type": "table",
-      "title": "Active shipments",
+      "title": "Active truck runs",
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
       "datasource": {"type": "postgres", "uid": "iot_postgres"},
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT truck_id, shipment_id, order_id, shipment_status, destination_country, updated_at FROM silver.truck_positions_current ORDER BY updated_at DESC LIMIT 50",
+          "rawSql": "SELECT tp.truck_id, tp.truck_status, dz.city AS current_zone_city, (SELECT count(*) FROM silver.purchase_orders_current po WHERE po.truck_id = tp.truck_id AND po.status = 'in-transit') AS orders_aboard, tp.updated_at FROM silver.truck_current_position tp LEFT JOIN reference.delivery_zones dz ON dz.zone_id = tp.current_zone_id WHERE tp.truck_status != 'free' ORDER BY tp.updated_at DESC LIMIT 50",
           "refId": "A"
         }
       ]

@@ -7,5 +7,5 @@
         updated_at='updated_at',
     )
 }}
-select * from {{ source('silver', 'customers_current') }}
+select * from {{ ref('stg_customers') }}
 {% endsnapshot %}

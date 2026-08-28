@@ -1,0 +1,76 @@
+# Single source of truth for every generator hyperparameter - rates,
+# probabilities, durations, counts. Structural/reference data (delivery
+# zones/geography, product categories, weather station locations) lives in
+# Postgres instead (schemas `reference`/`silver`, read once at startup via
+# generator_ro) - see redesign plan §2a/§3a and decision #12 for why.
+# Secrets never live here either (DB/Kafka credentials come from .env).
+# See docs/DEVELOPMENT.md for the full field-by-field reference.
+
+customers:
+  # Ongoing registrations, not a fixed upfront pool (unlike products, which
+  # are a fixed warehouse catalog seeded once) - matches the new
+  # registration-workflow narrative where customers sign up over time.
+  # max_customers is the modern equivalent of the old fixed num_customers:
+  # same ceiling on total customer-base size, just reached gradually via
+  # creation_rate_per_minute instead of seeded all at once on startup.
+  creation_rate_per_minute: 2
+  max_customers: 500
+  verification_delay_seconds: {min: 3, max: 8}  # account_verified fires this long after creation
+  attribute_update_rate_per_hour: 5   # address/segment changes -> customer SCD2
+  disable_rate_per_hour: 0.1          # chance per customer of an account_disabled event (rare)
+  re_enable_rate_per_hour: 5          # chance per disabled customer of an account_enabled event (much likelier than disabling)
+  # No country list here: which countries are in scope is implied entirely
+  # by reference.delivery_zones' currently-active rows (all CH today) -
+  # read once at generator startup, not duplicated as a second hyperparameter
+  # that could drift out of sync with the reference table.
+
+orders:
+  # Per-customer cap on simultaneously open (non-terminal) purchase orders -
+  # not a global cap. Renamed from the old target_concurrent_orders (which
+  # was checked against a single registry-wide count across all customers
+  # combined) to make this scope unambiguous.
+  max_concurrent_orders_per_customer: 3 # max number of POs per customers
+  order_arrival_rate_per_minute: 6     # controls how fast new purchase orders appear (system-wide)
+  cancellation_probability: 0.05       # proba that a PO gets cancelled by a customer
+  max_products_per_po: 5               # max distinct products (line items) per purchase order
+  max_products_qty_per_po: 10          # max quantity ordered per individual line item (min is always 1)
+  home_delivery_probability: 0.95       # chance the delivery zone is the customer's own home city,
+                                         # rather than a different (business/gift) delivery zone
+  delivery_buffer_days: 1               # added on top of travel time when computing target_delivery_date -
+                                         # deliberately gives the dispatcher room to accumulate more same-area orders
+
+invoices:
+  due_minutes: 1                       # time to settle before goods can be loaded onto a truck
+  non_payment_probability: 0.10        # chance an invoice isn't paid by its due time
+  max_reminders: 3                     # reminders before the linked purchase order is cancelled
+
+dispatch:
+  min_batch_size: 5                    # min paid orders queued in a zone before dispatching a truck
+  max_wait_minutes: 3                  # max time an order waits on-hold before dispatch anyway
+
+trucks:
+  fleet_size: 20                       # number of trucks in the fleet
+  capacity_products: 500               # max product units (summed across line items) per truck run
+  avg_speed_kmh: 250                   # drives simulated in-transit leg timing
+  position_ping_interval_seconds: 15   # controls live-map update frequency
+  load_seconds_per_order: 10           # simulated time to load one order onto a truck
+
+products:
+  num_products: 100
+  nominal_capacity_min: 10            # per-product warehouse capacity ceiling is generated in this
+  nominal_capacity_max: 50            # range at seed time - the range is the hyperparameter, the
+                                        # resulting per-product value is generated data (silver.products_current)
+  restock_threshold_pct: 20            # refill trigger: qty < this % of nominal_capacity
+  restock_target_pct: 100              # a refill brings stock back up to this % of nominal_capacity
+  refill_discount_pct: 40              # refill unit price is this % below the listed sale price
+  attribute_update_rate_per_hour: 2    # price/category changes -> product SCD2
+
+weather:
+  poll_interval_hours: 1               # station locations now live in reference.weather_stations
+
+# No kafka: section here - topic names are hardcoded per-generator-module
+# constants (data_generators/generators/*.py), never read from this file,
+# and topic provisioning (partition/replication count) lives in
+# config/kafka/topics_config.yml instead, since it's Kafka-infrastructure config,
+# not a generator hyperparameter - see docs/ARCHITECTURE.md's Kafka
+# partitioning section.

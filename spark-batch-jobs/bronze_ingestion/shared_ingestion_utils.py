@@ -21,6 +21,7 @@ import logging
 import os
 
 import psycopg2
+import yaml
 from py4j.protocol import Py4JJavaError
 from psycopg2.extras import execute_values
 from pyspark.sql import DataFrame, SparkSession
@@ -29,6 +30,8 @@ from pyspark.sql.functions import max as spark_max
 from pyspark.sql.types import StructType
 
 logger = logging.getLogger(__name__)
+
+KAFKA_TOPICS_CONFIG_PATH = os.environ.get("KAFKA_TOPICS_CONFIG_PATH", "/opt/config/kafka_topics.yml")
 
 
 def get_spark_session(app_name: str) -> SparkSession:
@@ -135,16 +138,54 @@ def append_rows(table: str, columns: list[str], rows: list[tuple], conflict_cols
         conn.commit()
 
 
+def append_rows_partition(
+    table: str,
+    columns: list[str],
+    rows_iter,
+    conflict_cols: str = "event_id",
+) -> None:
+    """foreachPartition-compatible wrapper around append_rows() - same
+    pattern as shared_utils.upsert_partition(): materialize this
+    partition's Row iterator to a list, no-op if empty, delegate to the
+    existing append_rows() unchanged so each partition opens its own
+    psycopg2 connection and writes independently."""
+    rows = list(rows_iter)
+    if not rows:
+        return
+    append_rows(table, columns, rows, conflict_cols=conflict_cols)
+
+
+def read_partitions_per_topic() -> int:
+    """Reads config/kafka/topics_config.yml's partitions_per_topic (mounted
+    read-only into airflow-scheduler at KAFKA_TOPICS_CONFIG_PATH) - same
+    value kafka-init uses to provision the Kafka topics themselves.
+    Duplicated from shared_utils.py's identical function rather than
+    imported across directories, matching this module's own documented
+    duplication convention (each directory is packaged independently for
+    spark-submit)."""
+    with open(KAFKA_TOPICS_CONFIG_PATH) as f:
+        return yaml.safe_load(f)["partitions_per_topic"]
+
+
 def run_ingestion(
     topic: str,
     table: str,
     schema: StructType,
     columns: list[str],
     conflict_cols: str = "event_id",
+    distributed: bool = False,
 ) -> None:
     """Generic periodic-batch Kafka -> bronze ingestion, parametrized per
-    domain - the 5 ingestion job files in this directory are thin wrappers
-    around this single implementation, since they're otherwise identical."""
+    domain - the ingestion job files in this directory are thin wrappers
+    around this single implementation, since they're otherwise identical.
+
+    `distributed=True` (opt-in, default False so every other domain's
+    behavior is provably unchanged) switches the write from a single
+    driver-side collect()+append_rows() call to
+    repartition(N).foreachPartition(...), giving N genuinely concurrent
+    Spark tasks each writing independently - see purchase_orders_to_silver.py
+    and docs/ARCHITECTURE.md for the same pattern's full rationale on the
+    silver side."""
     spark = get_spark_session(f"bronze-ingest-{table}")
     spark.sparkContext.setLogLevel("WARN")
 
@@ -173,12 +214,24 @@ def run_ingestion(
         # the ordinary "no new messages" case (which returns cleanly above).
         # Confirmed by testing: this is exactly what happens after Kafka
         # retention/topic state changes underneath an existing watermark.
-        if "is after the ending offset" in str(exc):
+        stale_watermark_reasons = (
+            "is after the ending offset",
+            # Raised when a topic's partition count grows (e.g. widened from 1
+            # to 2 partitions) after this table's control.kafka_offsets rows
+            # were written for the old, smaller partition set - Spark's Kafka
+            # batch source requires startingOffsets to name every currently
+            # -assigned partition, and the new one has no stored watermark yet.
+            # Confirmed by testing: widening a topic live triggers exactly
+            # this assertion on the very next run.
+            "you must specify all TopicPartitions",
+        )
+        if any(reason in str(exc) for reason in stale_watermark_reasons):
             logger.warning(
                 "Stored offset watermark for topic=%s is stale (points past what the "
-                "topic can currently serve). Resetting it and skipping this run - the "
-                "next run re-ingests from the earliest available offset, which is safe "
-                "since bronze appends are idempotent (ON CONFLICT DO NOTHING).",
+                "topic can currently serve, or is missing a newly-added partition). "
+                "Resetting it and skipping this run - the next run re-ingests from the "
+                "earliest available offset, which is safe since bronze appends are "
+                "idempotent (ON CONFLICT DO NOTHING).",
                 topic,
             )
             reset_offsets(topic)
@@ -197,9 +250,21 @@ def run_ingestion(
         from_json(col("value").cast("string"), schema).alias("data"),
     ).select("partition", "offset", "data.*")
 
-    rows = [tuple(row[c] for c in columns) for row in parsed.select(*columns).collect()]
-    append_rows(table, columns, rows, conflict_cols)
+    if distributed:
+        def _write_partition(rows_iter) -> None:
+            rows = [tuple(row[c] for c in columns) for row in rows_iter]
+            append_rows_partition(table, columns, rows, conflict_cols=conflict_cols)
+
+        selected = parsed.select(*columns)
+        row_count = selected.count()
+        selected.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
+        rows_logged = row_count
+    else:
+        rows = [tuple(row[c] for c in columns) for row in parsed.select(*columns).collect()]
+        append_rows(table, columns, rows, conflict_cols)
+        rows_logged = len(rows)
+
     update_offsets(topic, parsed)
 
-    logger.info("Ingested %d rows into %s", len(rows), table)
+    logger.info("Ingested %d rows into %s", rows_logged, table)
     spark.stop()

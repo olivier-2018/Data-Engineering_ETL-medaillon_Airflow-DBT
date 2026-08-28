@@ -17,7 +17,7 @@
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT table_name, last_processed_ingested_at, extract(epoch from (now() - last_processed_ingested_at)) AS lag_seconds FROM control.watermarks ORDER BY lag_seconds DESC",
+          "rawSql": "SELECT table_name, last_processed_ingested_at, extract(epoch from (now() - last_processed_ingested_at)) AS lag_seconds FROM control.silver_watermarks ORDER BY lag_seconds DESC",
           "refId": "A"
         }
       ]
@@ -31,7 +31,7 @@
       "targets": [
         {
           "format": "table",
-          "rawSql": "SELECT 'customers' AS domain, count(*) FROM silver.error_customers WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'products', count(*) FROM silver.error_products WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'sales_orders', count(*) FROM silver.error_sales_orders WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'payments', count(*) FROM silver.error_payments WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'inventory_changes', count(*) FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'truck_positions', count(*) FROM silver.error_truck_positions WHERE rejected_at > now() - interval '15 minutes'",
+          "rawSql": "SELECT 'customers' AS domain, count(*) FROM silver.error_customers WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'products', count(*) FROM silver.error_products WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'purchase_orders', count(*) FROM silver.error_purchase_orders WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'product_on_orders', count(*) FROM silver.error_product_on_orders WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'invoices', count(*) FROM silver.error_invoices WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'inventory_changes', count(*) FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'truck_fleet', count(*) FROM silver.error_truck_fleet WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT 'truck_positions', count(*) FROM silver.error_truck_positions WHERE rejected_at > now() - interval '15 minutes'",
           "refId": "A"
         }
       ]
@@ -45,7 +45,7 @@
       "targets": [
         {
           "format": "time_series",
-          "rawSql": "SELECT date_trunc('minute', ingested_at) AS time, count(*) AS orders FROM iot.sales_order_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 ORDER BY 1",
+          "rawSql": "SELECT date_trunc('minute', ingested_at) AS time, count(*) AS orders FROM iot.purchase_order_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 ORDER BY 1",
           "refId": "A"
         }
       ]

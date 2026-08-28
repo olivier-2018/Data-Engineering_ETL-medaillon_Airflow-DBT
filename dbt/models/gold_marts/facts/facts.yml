@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: fact_purchase_orders
+    columns:
+      - name: purchase_order_id
+        data_tests: [not_null, unique]
+      - name: customer_key
+        data_tests:
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_key
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: ['created', 'invoiced', 'paid', 'on-hold', 'loaded', 'in-transit', 'delivered', 'closed', 'cancelled']
+
+  - name: fact_product_on_orders
+    columns:
+      - name: product_on_order_id
+        data_tests: [not_null, unique]
+      - name: purchase_order_id
+        data_tests:
+          - relationships:
+              to: ref('fact_purchase_orders')
+              field: purchase_order_id
+      - name: product_key
+        data_tests:
+          - relationships:
+              to: ref('dim_product')
+              field: product_key
+
+  - name: fact_invoices
+    columns:
+      - name: invoice_id
+        data_tests: [not_null, unique]
+      - name: purchase_order_id
+        data_tests:
+          - relationships:
+              to: ref('fact_purchase_orders')
+              field: purchase_order_id
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: ['created', 'pending', 'settled', 'cancelled']
+
+  - name: fact_shipments
+    columns:
+      - name: purchase_order_id
+        data_tests: [not_null, unique]
+      - name: truck_key
+        data_tests:
+          - relationships:
+              to: ref('dim_truck')
+              field: truck_key
+      - name: zone_id
+        data_tests:
+          - relationships:
+              to: ref('dim_delivery_zone')
+              field: zone_id
+
+  - name: fact_inventory_snapshot
+    columns:
+      - name: product_id
+        data_tests: [not_null]
+
+  - name: fact_weather_delivery_correlation
+    columns:
+      - name: purchase_order_id
+        data_tests: [not_null, unique]
