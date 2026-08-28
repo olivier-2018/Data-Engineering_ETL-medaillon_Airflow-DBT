@@ -7,9 +7,12 @@ from __future__ import annotations
 import os
 
 import psycopg2
+import yaml
 from psycopg2.extras import execute_values
 from pyspark.sql import SparkSession
 from pyspark.sql.types import DoubleType, IntegerType, StringType, StructField, StructType
+
+KAFKA_TOPICS_CONFIG_PATH = os.environ.get("KAFKA_TOPICS_CONFIG_PATH", "/opt/config/kafka_topics.yml")
 
 
 def get_spark_session(app_name: str) -> SparkSession:
@@ -118,3 +121,35 @@ def write_truck_positions_batch(rows: list[dict]) -> None:
                 template="(%s, ST_MakePoint(%s, %s)::geography, %s, %s, %s)",
             )
         conn.commit()
+
+
+def write_truck_positions_partition(rows_iter) -> None:
+    """foreachPartition-compatible wrapper around write_truck_positions_batch()
+    - same pattern as the batch DAGs' upsert_partition()/append_rows_partition()
+    (see docs/SPARK_PROJECT.md). Each partition opens its own connection and
+    writes its slice independently; safe even if the same truck_id's pings
+    land in two different partitions of the same micro-batch, because
+    write_truck_positions_batch()'s own per-partition local
+    latest-event_at-per-truck dedup plus its unchanged
+    `WHERE EXCLUDED.updated_at > silver.truck_current_position.updated_at`
+    guard (same reasoning as inventory_to_silver.py's dual-write path)
+    means whichever partition's write is genuinely later always wins,
+    regardless of which one commits first. The bronze insert has no such
+    concern at all - event_id is unique per ping, so no two partitions can
+    ever collide on it."""
+    rows = [r.asDict() for r in rows_iter]
+    write_truck_positions_batch(rows)
+
+
+def read_partitions_per_topic() -> int:
+    """Reads config/kafka/topics_config.yml's partitions_per_topic (mounted
+    read-only into this job's own container - unlike the batch DAGs, this
+    streaming job's driver runs in its own dedicated
+    spark-streaming-truck-position container, not airflow-scheduler, so it
+    needs its own copy of this mount). Duplicated from
+    spark-batch-jobs/*/shared_utils.py's identical function rather than
+    imported across directories, matching this project's own established
+    duplication convention (each directory is packaged independently for
+    spark-submit)."""
+    with open(KAFKA_TOPICS_CONFIG_PATH) as f:
+        return yaml.safe_load(f)["partitions_per_topic"]

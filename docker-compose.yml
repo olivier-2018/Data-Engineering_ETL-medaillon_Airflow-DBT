@@ -340,9 +340,12 @@ services:
       --name bronze-truck-position-ingest
       --conf spark.driver.memory=512m
       --conf spark.executor.memory=512m
-      --conf spark.cores.max=1
+      --conf spark.cores.max=2
       --conf spark.driver.host=spark-streaming-truck-position
       --conf spark.ui.port=4040
+      --conf spark.executorEnv.PYTHONPATH=/opt/spark-streaming-jobs
+      --conf spark.scheduler.minRegisteredResourcesRatio=1.0
+      --conf spark.scheduler.maxRegisteredResourcesWaitingTime=3s
       /opt/spark-streaming-jobs/ingest_truck_positions.py
     environment:
       - SPARK_PUBLIC_DNS=localhost
@@ -356,6 +359,7 @@ services:
       - ./spark-streaming-jobs:/opt/spark-streaming-jobs:ro
       - ./data-spark-logs:/opt/spark/logs
       - ./data-spark-checkpoints:/tmp/spark-data/checkpoints
+      - ./config/kafka/topics_config.yml:/opt/config/kafka_topics.yml:ro
     depends_on:
       spark-master:
         condition: service_healthy
@@ -518,11 +522,13 @@ services:
     # container, so batch starts one above it and auto-increments to
     # 4042/4043 for additional concurrent jobs in this same container. The
     # ceiling of 3 concurrent ports isn't arbitrary: SPARK_WORKER_CORES=4/4
-    # (8 total) minus the streaming job's permanent spark.cores.max=1 leaves 7
-    # free, and every batch job also requests spark.cores.max=2, so at most 3
-    # can hold executors at once regardless of how many DAGs are scheduled -
-    # a 4th queues at Spark Master until a slot frees up (confirmed by
-    # testing). Published so they're reachable from the host.
+    # (8 total) minus the streaming job's permanent spark.cores.max=2 (bumped
+    # back from 1 once iot.truck_position_events was widened to 2 partitions
+    # - see docs/SPARK_PROJECT.md) leaves 6 free, and every batch job also
+    # requests spark.cores.max=2, so at most 3 can hold executors at once
+    # regardless of how many DAGs are scheduled - a 4th queues at Spark
+    # Master until a slot frees up (confirmed by testing). Published so
+    # they're reachable from the host.
     # SPARK_PUBLIC_DNS=localhost below is what makes Spark Master's
     # "Application Detail UI" link actually resolve from a host browser:
     # Spark's WebUI base class reports this env var (when set) as its public
@@ -547,8 +553,8 @@ services:
     networks:
       - airflow_network
     # Bumped from 1536m/1.0 cpus: up to 3 batch SparkSubmitOperator tasks can
-    # now run concurrently (SPARK_WORKER_CORES=4/4, streaming job takes 1,
-    # 7 free / 2 per batch job -> 3 concurrent), each with its
+    # now run concurrently (SPARK_WORKER_CORES=4/4, streaming job takes 2,
+    # 6 free / 2 per batch job -> 3 concurrent), each with its
     # own real client-mode driver JVM (not just idle-waiting) inside this
     # container.
     mem_limit: 2048m

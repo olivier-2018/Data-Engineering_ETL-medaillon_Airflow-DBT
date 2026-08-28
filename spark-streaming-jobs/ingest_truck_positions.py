@@ -17,7 +17,8 @@ from pyspark.sql.functions import col, from_json
 from shared_streaming_utils import (
     TRUCK_POSITION_SCHEMA,
     get_spark_session,
-    write_truck_positions_batch,
+    read_partitions_per_topic,
+    write_truck_positions_partition,
 )
 
 APP_NAME = "bronze-truck-position-ingest"
@@ -26,8 +27,11 @@ CHECKPOINT_DIR = "/tmp/spark-data/checkpoints/truck_position"
 
 
 def process_batch(batch_df, epoch_id: int) -> None:
-    rows = [r.asDict() for r in batch_df.collect()]
-    write_truck_positions_batch(rows)
+    # repartition(N).foreachPartition(...) instead of collect() + one
+    # driver-side write - same distributed-write pattern as the batch DAGs
+    # (see docs/SPARK_PROJECT.md), N matching the Kafka topic's own
+    # partition count (config/kafka/topics_config.yml).
+    batch_df.repartition(read_partitions_per_topic()).foreachPartition(write_truck_positions_partition)
 
 
 def main() -> None:
