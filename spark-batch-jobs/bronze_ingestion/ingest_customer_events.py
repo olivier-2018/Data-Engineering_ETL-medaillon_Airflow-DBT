@@ -32,4 +32,5 @@ if __name__ == "__main__":
         schema=SCHEMA,
         columns=COLUMNS,
         conflict_cols="event_id",
+        distributed=True,
     )

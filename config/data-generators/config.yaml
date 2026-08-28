@@ -51,7 +51,7 @@ dispatch:
 trucks:
   fleet_size: 20                       # number of trucks in the fleet
   capacity_products: 500               # max product units (summed across line items) per truck run
-  avg_speed_kmh: 80                    # drives simulated in-transit leg timing
+  avg_speed_kmh: 250                   # drives simulated in-transit leg timing
   position_ping_interval_seconds: 15   # controls live-map update frequency
   load_seconds_per_order: 10           # simulated time to load one order onto a truck
 
@@ -71,6 +71,6 @@ weather:
 # No kafka: section here - topic names are hardcoded per-generator-module
 # constants (data_generators/generators/*.py), never read from this file,
 # and topic provisioning (partition/replication count) lives in
-# config/kafka/topics.yml instead, since it's Kafka-infrastructure config,
+# config/kafka/topics_config.yml instead, since it's Kafka-infrastructure config,
 # not a generator hyperparameter - see docs/ARCHITECTURE.md's Kafka
 # partitioning section.

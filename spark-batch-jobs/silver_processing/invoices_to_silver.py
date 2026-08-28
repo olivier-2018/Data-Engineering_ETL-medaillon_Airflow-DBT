@@ -30,7 +30,15 @@ from pyspark.sql.functions import coalesce, col, lag, min as spark_min, row_numb
 from pyspark.sql.types import DoubleType, IntegerType, StringType, StructField, StructType, TimestampType
 from pyspark.sql.window import Window
 
-from shared_utils import fetch_incremental, get_spark_session, read_watermark, route_errors, upsert, write_watermark
+from shared_utils import (
+    fetch_incremental,
+    get_spark_session,
+    read_partitions_per_topic,
+    read_watermark,
+    route_errors,
+    upsert_partition,
+    write_watermark,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -129,7 +137,14 @@ def main() -> None:
         route_errors(ERROR_TABLE, error_rows)
 
     if valid_rows:
-        valid_df = spark.createDataFrame(valid_rows).drop("prev_status", "prev_reminder")
+        # Explicit schema, not inferred: inferring from valid_rows (a plain
+        # list[Row]) re-derives types from raw Python values and fails
+        # outright with CANNOT_DETERMINE_TYPE whenever a nullable column
+        # (e.g. due_at) happens to be None in every surviving row of a
+        # small batch - with_prev's schema is already known and correct,
+        # so reuse it instead of re-inferring (same fix already applied to
+        # purchase_orders_to_silver.py).
+        valid_df = spark.createDataFrame(valid_rows, schema=with_prev.schema).drop("prev_status", "prev_reminder")
 
         created_rows = (
             valid_df.filter(col("status") == "created")
@@ -158,24 +173,28 @@ def main() -> None:
             .withColumn("created_at", coalesce(col("created_at"), col("earliest_event_at")))
         )
 
-        silver_rows = [
-            (
-                r.invoice_id, r.purchase_order_id, r.customer_id, r.amount,
-                r.status, r.payment_reminder, r.due_at, r.event_at, r.created_at,
+        def _write_partition(rows_iter) -> None:
+            rows = [
+                (
+                    r.invoice_id, r.purchase_order_id, r.customer_id, r.amount,
+                    r.status, r.payment_reminder, r.due_at, r.event_at, r.created_at,
+                )
+                for r in rows_iter
+            ]
+            upsert_partition(
+                SILVER_TABLE,
+                key_cols=["invoice_id"],
+                set_cols=[
+                    "purchase_order_id", "customer_id", "amount", "status",
+                    "payment_reminder", "due_payment_date", "updated_at",
+                ],
+                rows_iter=rows,
+                coalesce_cols=["created_at"],
             )
-            for r in final.collect()
-        ]
-        upsert(
-            SILVER_TABLE,
-            key_cols=["invoice_id"],
-            set_cols=[
-                "purchase_order_id", "customer_id", "amount", "status",
-                "payment_reminder", "due_payment_date", "updated_at",
-            ],
-            rows=silver_rows,
-            coalesce_cols=["created_at"],
-        )
-        logger.info("Upserted %d invoice(s) into %s", len(silver_rows), SILVER_TABLE)
+
+        row_count = final.count()
+        final.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
+        logger.info("Upserted up to %d invoice(s) into %s", row_count, SILVER_TABLE)
 
     new_watermark = df.agg({"ingested_at": "max"}).collect()[0][0]
     write_watermark(BRONZE_TABLE_NAME, new_watermark)

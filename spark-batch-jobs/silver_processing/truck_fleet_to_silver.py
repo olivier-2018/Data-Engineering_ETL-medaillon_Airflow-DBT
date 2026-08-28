@@ -18,7 +18,14 @@ from pyspark.sql.types import (
 )
 from pyspark.sql.window import Window
 
-from shared_utils import fetch_incremental, get_spark_session, read_watermark, upsert, write_watermark
+from shared_utils import (
+    fetch_incremental,
+    get_spark_session,
+    read_partitions_per_topic,
+    read_watermark,
+    upsert_partition,
+    write_watermark,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,21 +83,28 @@ def main() -> None:
         .drop("rn")
     )
 
-    silver_rows = [
-        (r.truck_id, r.name, r.brand, r.model, r.size, r.capacity, r.weight_kg, r.event_at)
-        for r in deduped.collect()
-    ]
-    upsert(
-        SILVER_TABLE,
-        key_cols=["truck_id"],
-        set_cols=["name", "brand", "model", "size", "capacity", "weight_kg", "updated_at"],
-        rows=silver_rows,
-    )
+    def _write_partition(rows_iter) -> None:
+        rows = [
+            (r.truck_id, r.name, r.brand, r.model, r.size, r.capacity, r.weight_kg, r.event_at)
+            for r in rows_iter
+        ]
+        upsert_partition(
+            SILVER_TABLE,
+            key_cols=["truck_id"],
+            set_cols=["name", "brand", "model", "size", "capacity", "weight_kg", "updated_at"],
+            rows_iter=rows,
+        )
+
+    # No Python-side computation needed before the write here (unlike
+    # products_to_silver.py's restock_required lookup) - repartition
+    # straight off deduped, no collect()+recreate round-trip required.
+    row_count = deduped.count()
+    deduped.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
 
     new_watermark = df.agg({"ingested_at": "max"}).collect()[0][0]
     write_watermark(BRONZE_TABLE_NAME, new_watermark)
 
-    logger.info("Upserted %d truck(s) into %s", len(silver_rows), SILVER_TABLE)
+    logger.info("Upserted up to %d truck(s) into %s", row_count, SILVER_TABLE)
     spark.stop()
 
 

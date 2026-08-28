@@ -20,7 +20,14 @@ from pyspark.sql.functions import coalesce, col, min as spark_min, row_number
 from pyspark.sql.types import BooleanType, StringType, StructField, StructType, TimestampType
 from pyspark.sql.window import Window
 
-from shared_utils import fetch_incremental, get_spark_session, read_watermark, upsert, write_watermark
+from shared_utils import (
+    fetch_incremental,
+    get_spark_session,
+    read_partitions_per_topic,
+    read_watermark,
+    upsert_partition,
+    write_watermark,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,28 +109,32 @@ def main() -> None:
         .withColumn("created_at", coalesce(col("created_at"), col("earliest_event_at")))
     )
 
-    silver_rows = [
-        (
-            r.customer_id, r.name, r.email, r.address, r.tel, r.country, r.city, r.segment,
-            bool(r.verified_account), bool(r.disabled_account), r.event_at, r.created_at,
+    def _write_partition(rows_iter) -> None:
+        rows = [
+            (
+                r.customer_id, r.name, r.email, r.address, r.tel, r.country, r.city, r.segment,
+                bool(r.verified_account), bool(r.disabled_account), r.event_at, r.created_at,
+            )
+            for r in rows_iter
+        ]
+        upsert_partition(
+            SILVER_TABLE,
+            key_cols=["customer_id"],
+            set_cols=[
+                "name", "email", "address", "tel", "country", "city", "segment",
+                "verified_account", "disabled_account", "updated_at",
+            ],
+            rows_iter=rows,
+            coalesce_cols=["created_at"],
         )
-        for r in final.collect()
-    ]
-    upsert(
-        SILVER_TABLE,
-        key_cols=["customer_id"],
-        set_cols=[
-            "name", "email", "address", "tel", "country", "city", "segment",
-            "verified_account", "disabled_account", "updated_at",
-        ],
-        rows=silver_rows,
-        coalesce_cols=["created_at"],
-    )
+
+    row_count = final.count()
+    final.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
 
     new_watermark = df.agg({"ingested_at": "max"}).collect()[0][0]
     write_watermark(BRONZE_TABLE_NAME, new_watermark)
 
-    logger.info("Upserted %d customer(s) into %s", len(silver_rows), SILVER_TABLE)
+    logger.info("Upserted up to %d customer(s) into %s", row_count, SILVER_TABLE)
     spark.stop()
 
 

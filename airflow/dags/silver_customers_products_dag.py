@@ -26,6 +26,13 @@ SPARK_CONF = {
     "spark.cores.max": "2",
     "spark.ui.port": "4041",
     "spark.driver.host": "airflow-scheduler",
+    # All three jobs now write via repartition+foreachPartition, needing
+    # executors to `import shared_utils` - see
+    # silver_purchase_orders_dag.py's own identical addition and
+    # docs/SPARK_PROJECT.md for the full rationale.
+    "spark.executorEnv.PYTHONPATH": "/opt/spark-batch-jobs/silver_processing",
+    "spark.scheduler.minRegisteredResourcesRatio": "1.0",
+    "spark.scheduler.maxRegisteredResourcesWaitingTime": "3s",
 }
 
 with DAG(

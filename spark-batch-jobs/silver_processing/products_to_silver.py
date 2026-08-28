@@ -20,6 +20,7 @@ import yaml
 from pyspark.sql import Row
 from pyspark.sql.functions import col, row_number
 from pyspark.sql.types import (
+    BooleanType,
     DoubleType,
     IntegerType,
     StringType,
@@ -29,7 +30,14 @@ from pyspark.sql.types import (
 )
 from pyspark.sql.window import Window
 
-from shared_utils import fetch_incremental, get_spark_session, read_watermark, upsert, write_watermark
+from shared_utils import (
+    fetch_incremental,
+    get_spark_session,
+    read_partitions_per_topic,
+    read_watermark,
+    upsert_partition,
+    write_watermark,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,6 +67,28 @@ SCHEMA = StructType(
         StructField("nominal_capacity", IntegerType(), False),
         StructField("event_at", TimestampType(), False),
         StructField("ingested_at", TimestampType(), False),
+    ]
+)
+
+# Shape of silver_rows below (product_id..event_at, plus the computed
+# restock_required bool) - explicit schema, not inferred, for the same
+# reason as everywhere else in this project: a plain list[Row]/list[tuple]
+# re-derives types from raw Python values and fails outright with
+# CANNOT_DETERMINE_TYPE whenever a nullable column (brand/model/subcategory/
+# weight_kg) happens to be None in every row of a small batch.
+SILVER_ROW_SCHEMA = StructType(
+    [
+        StructField("product_id", StringType(), False),
+        StructField("name", StringType(), False),
+        StructField("brand", StringType(), True),
+        StructField("model", StringType(), True),
+        StructField("category", StringType(), False),
+        StructField("subcategory", StringType(), True),
+        StructField("unit_price", DoubleType(), False),
+        StructField("weight_kg", DoubleType(), True),
+        StructField("nominal_capacity", IntegerType(), False),
+        StructField("restock_required", BooleanType(), False),
+        StructField("event_at", TimestampType(), False),
     ]
 )
 
@@ -117,20 +147,31 @@ def main() -> None:
             )
         )
 
-    upsert(
-        SILVER_TABLE,
-        key_cols=["product_id"],
-        set_cols=[
-            "name", "brand", "model", "category", "subcategory", "unit_price",
-            "weight_kg", "nominal_capacity", "restock_required", "updated_at",
-        ],
-        rows=silver_rows,
-    )
+    def _write_partition(rows_iter) -> None:
+        rows = [
+            (
+                r.product_id, r.name, r.brand, r.model, r.category, r.subcategory,
+                r.unit_price, r.weight_kg, r.nominal_capacity, r.restock_required, r.event_at,
+            )
+            for r in rows_iter
+        ]
+        upsert_partition(
+            SILVER_TABLE,
+            key_cols=["product_id"],
+            set_cols=[
+                "name", "brand", "model", "category", "subcategory", "unit_price",
+                "weight_kg", "nominal_capacity", "restock_required", "updated_at",
+            ],
+            rows_iter=rows,
+        )
+
+    silver_df = spark.createDataFrame(silver_rows, schema=SILVER_ROW_SCHEMA)
+    silver_df.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
 
     new_watermark = df.agg({"ingested_at": "max"}).collect()[0][0]
     write_watermark(BRONZE_TABLE_NAME, new_watermark)
 
-    logger.info("Upserted %d product(s) into %s", len(silver_rows), SILVER_TABLE)
+    logger.info("Upserted up to %d product(s) into %s", len(silver_rows), SILVER_TABLE)
     spark.stop()
 
 

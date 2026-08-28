@@ -34,7 +34,19 @@ with DAG(
         name="invoices-to-silver",
         conn_id="spark_default",
         deploy_mode="client",
-        conf={"spark.driver.memory": "512m", "spark.executor.memory": "512m", "spark.cores.max": "2", "spark.ui.port": "4041", "spark.driver.host": "airflow-scheduler"},
+        conf={
+            "spark.driver.memory": "512m",
+            "spark.executor.memory": "512m",
+            "spark.cores.max": "2",
+            "spark.ui.port": "4041",
+            "spark.driver.host": "airflow-scheduler",
+            # Now writes via repartition+foreachPartition - see
+            # silver_purchase_orders_dag.py's identical addition and
+            # docs/SPARK_PROJECT.md for the full rationale.
+            "spark.executorEnv.PYTHONPATH": "/opt/spark-batch-jobs/silver_processing",
+            "spark.scheduler.minRegisteredResourcesRatio": "1.0",
+            "spark.scheduler.maxRegisteredResourcesWaitingTime": "3s",
+        },
         outlets=[SILVER_INVOICES],
     )
     check_errors = SQLThresholdCheckOperator(

@@ -18,7 +18,15 @@ from pyspark.sql import Row
 from pyspark.sql.functions import col
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType, TimestampType
 
-from shared_utils import fetch_incremental, get_spark_session, read_watermark, route_errors, upsert, write_watermark
+from shared_utils import (
+    fetch_incremental,
+    get_spark_session,
+    read_partitions_per_topic,
+    read_watermark,
+    route_errors,
+    upsert_partition,
+    write_watermark,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -84,23 +92,33 @@ def main() -> None:
         route_errors(ERROR_TABLE, error_rows)
 
     if valid_rows:
-        silver_rows = [
-            (
-                r.product_on_order_id, r.purchase_order_id, r.product_id,
-                r.qty_on_order, r.customer_comment, r.event_at, r.event_at,
+        def _write_partition(rows_iter) -> None:
+            rows = [
+                (
+                    r.product_on_order_id, r.purchase_order_id, r.product_id,
+                    r.qty_on_order, r.customer_comment, r.event_at, r.event_at,
+                )
+                for r in rows_iter
+            ]
+            upsert_partition(
+                SILVER_TABLE,
+                key_cols=["product_on_order_id"],
+                set_cols=[
+                    "purchase_order_id", "product_id", "qty_on_order",
+                    "customer_comment", "created_at", "updated_at",
+                ],
+                rows_iter=rows,
             )
-            for r in valid_rows
-        ]
-        upsert(
-            SILVER_TABLE,
-            key_cols=["product_on_order_id"],
-            set_cols=[
-                "purchase_order_id", "product_id", "qty_on_order",
-                "customer_comment", "created_at", "updated_at",
-            ],
-            rows=silver_rows,
-        )
-        logger.info("Upserted %d line item(s) into %s", len(silver_rows), SILVER_TABLE)
+
+        # valid_rows was already collected to the driver (needed for the
+        # Python-side orphan-check against known_order_ids) - rebuild a
+        # small DataFrame from it (reusing df's own schema, same trick as
+        # purchase_orders_to_silver.py, to avoid CANNOT_DETERMINE_TYPE) so
+        # repartition+foreachPartition can distribute the write across N
+        # genuinely concurrent Spark tasks instead of one driver-side call.
+        valid_df = spark.createDataFrame(valid_rows, schema=df.schema)
+        valid_df.repartition(read_partitions_per_topic()).foreachPartition(_write_partition)
+        logger.info("Upserted up to %d line item(s) into %s", len(valid_rows), SILVER_TABLE)
 
     new_watermark = df.agg({"ingested_at": "max"}).collect()[0][0]
     write_watermark(BRONZE_TABLE_NAME, new_watermark)
