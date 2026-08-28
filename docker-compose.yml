@@ -221,7 +221,7 @@ services:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_PUBLIC_DNS=localhost
       - SPARK_WORKER_CORES=4
-      - SPARK_WORKER_MEMORY=1500m
+      - SPARK_WORKER_MEMORY=1600m
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-iot_database}
@@ -239,8 +239,8 @@ services:
       - spark-master
     networks:
       - airflow_network
-    mem_limit: 1500m
-    memswap_limit: 1500m
+    mem_limit: 1600m
+    memswap_limit: 1600m
     cpus: '2.5'
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081').read()"]
@@ -267,7 +267,7 @@ services:
       - SPARK_NO_DAEMONIZE=true
       - SPARK_PUBLIC_DNS=localhost
       - SPARK_WORKER_CORES=4
-      - SPARK_WORKER_MEMORY=1500m
+      - SPARK_WORKER_MEMORY=1600m
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-iot_database}
@@ -285,8 +285,8 @@ services:
       - spark-master
     networks:
       - airflow_network
-    mem_limit: 1500m
-    memswap_limit: 1500m
+    mem_limit: 1600m
+    memswap_limit: 1600m
     cpus: '2.5'
     healthcheck:
       # Now that --webui-port 8082 makes this container actually listen on

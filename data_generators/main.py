@@ -107,6 +107,46 @@ def _log_no_eligible_customer(customers: dict, cfg: dict) -> None:
     )
 
 
+def _process_pending_invoices(producer, cfg: dict, scheduler: Scheduler, orders: dict, products: dict, invoices: dict) -> None:
+    """For every order still at status=='created' (PO emitted, no invoice
+    yet), checks whether the PO has actually landed in
+    silver.purchase_orders_current before creating its invoice - avoids
+    emitting a product_on_order_events/invoice_events row whose
+    purchase_order_id doesn't exist in silver yet from
+    product_on_orders_to_silver.py's/invoices_to_silver.py's own
+    perspective, which would otherwise get permanently quarantined as an
+    orphan (see TODO.md's "avoid orphans" items). No blocking: an order
+    whose PO isn't confirmed yet just stays 'created' and is reconsidered
+    next tick, since this runs every tick (also called once at bootstrap,
+    covering the pre-existing "crash between PurchaseOrder.create() and
+    create_invoice()" repair case - those orders were just read from
+    silver.purchase_orders_current, so they're always already confirmed).
+
+    `existing_invoice_pos` guards against a double-invoice at bootstrap
+    specifically: silver.purchase_orders_current.status and
+    silver.invoices_current are updated by independently-scheduled DAGs, so
+    a resumed order's status can still read 'created' even though its
+    invoice already exists (and was already loaded via Invoice.from_resume())
+    - without this check, this function would create a second invoice for
+    the same order, whose own due-timer would later attempt a duplicate
+    mark_paid() and raise an invalid on-hold -> paid transition (confirmed
+    happening in practice)."""
+    pending = [o for o in orders.values() if o.status == "created"]
+    if not pending:
+        return
+    existing_invoice_pos = {inv.purchase_order_id for inv in invoices.values()}
+    pending = [o for o in pending if o.purchase_order_id not in existing_invoice_pos]
+    if not pending:
+        return
+    confirmed_ids = db.purchase_order_ids_in_silver([o.purchase_order_id for o in pending])
+    for order in pending:
+        if order.purchase_order_id not in confirmed_ids:
+            continue
+        order.create_invoice(producer)
+        invoice = Invoice.create(producer, cfg, scheduler, order, order.total_amount(products), products)
+        invoices[invoice.invoice_id] = invoice
+
+
 def _bootstrap(producer, cfg: dict, scheduler: Scheduler, state: dict):
     zones = state["zones"]
     warehouse = _warehouse(zones)
@@ -216,13 +256,12 @@ def _bootstrap(producer, cfg: dict, scheduler: Scheduler, state: dict):
 
     # Repair: a crash between PurchaseOrder.create() and create_invoice()
     # (a sub-second window) would resume with an order stuck at "created"
-    # and no invoice - close that gap the same way the synchronous
-    # creation path normally would.
-    for order in list(orders.values()):
-        if order.status == "created":
-            order.create_invoice(producer)
-            invoice = Invoice.create(producer, cfg, scheduler, order, order.total_amount(products), products)
-            invoices[invoice.invoice_id] = invoice
+    # and no invoice - close that gap via the same silver-gated helper the
+    # tick loop uses every tick (these particular orders were just read
+    # from silver.purchase_orders_current above, so they're always already
+    # confirmed - this call always succeeds for them, matching the
+    # original repair loop's immediate behavior).
+    _process_pending_invoices(producer, cfg, scheduler, orders, products, invoices)
 
     dispatcher = Dispatcher(cfg, trucks, zones)
     return customers, products, orders, invoices, trucks, dispatcher, zones
@@ -298,10 +337,13 @@ def main() -> None:
                 logger.exception("Product.maybe_update raised for %r (%s)", product.name, product.product_id)
 
         # 4. New purchase orders, from an eligible (verified, not disabled,
-        #    under their per-customer open-order cap) customer. The invoice
-        #    is created synchronously right after, since both "created" and
-        #    "invoiced" are instantaneous transitions per spec - there's no
-        #    reason to defer it to a later tick.
+        #    under their per-customer open-order cap) customer whose own
+        #    'created' event has already landed in silver.customers_current -
+        #    skip (not block) this tick's attempt otherwise, avoiding an
+        #    orphan_customer rejection in purchase_orders_to_silver.py; a
+        #    later tick will naturally retry (see TODO.md's "avoid orphans").
+        #    The invoice is no longer created synchronously here - see step
+        #    4b, which defers it until the PO itself is confirmed in silver.
         order_arrival_per_tick = cfg["orders"]["order_arrival_rate_per_minute"] / 60.0
         if random.random() < order_arrival_per_tick and products:
             eligible = [c for c in customers.values() if c.can_create_purchase_order(cfg)]
@@ -310,16 +352,26 @@ def main() -> None:
             else:
                 try:
                     customer = random.choice(eligible)
-                    zone = _delivery_zone_for(customer, zones, cfg)
-                    order = PurchaseOrder.create(producer, customer, products, zone, warehouse, cfg)
-                    orders[order.purchase_order_id] = order
-                    customer.open_order_ids.add(order.purchase_order_id)
-
-                    order.create_invoice(producer)
-                    invoice = Invoice.create(producer, cfg, scheduler, order, order.total_amount(products), products)
-                    invoices[invoice.invoice_id] = invoice
+                    if not db.customer_exists_in_silver(customer.customer_id):
+                        logger.debug(
+                            "Skipping order creation for %s this tick - not yet in silver.customers_current",
+                            customer.email,
+                        )
+                    else:
+                        zone = _delivery_zone_for(customer, zones, cfg)
+                        order = PurchaseOrder.create(producer, customer, products, zone, warehouse, cfg)
+                        orders[order.purchase_order_id] = order
+                        customer.open_order_ids.add(order.purchase_order_id)
                 except Exception:
-                    logger.exception("Order/invoice creation raised")
+                    logger.exception("Order creation raised")
+
+        # 4b. Create invoices for any order whose PO has landed in silver
+        #     since it was created (runs every tick, not just at bootstrap -
+        #     see _process_pending_invoices()'s own docstring).
+        try:
+            _process_pending_invoices(producer, cfg, scheduler, orders, products, invoices)
+        except Exception:
+            logger.exception("_process_pending_invoices raised")
 
         # 5. Truck consolidation (Dispatcher decides which on-hold orders to
         #    batch onto a free truck) + truck movement/delivery progress.

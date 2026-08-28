@@ -20,7 +20,7 @@ from datetime import timedelta
 from kafka_producer import send_event
 
 from .geo import road_distance_km
-from .helpers import now_iso, utc_now
+from .helpers import now_iso, resumed_utc_iso, utc_now
 from .lifecycle import Lifecycle
 
 logger = logging.getLogger(__name__)
@@ -226,13 +226,11 @@ class PurchaseOrder(Lifecycle):
             line_items=line_items,
             avg_speed_kmh=1.0,  # unused - target_delivery_date is overwritten below with the persisted value
             delivery_buffer_days=0,
-            created_at=row["created_at"].isoformat() if row["created_at"] else None,
+            created_at=resumed_utc_iso(row["created_at"]),
             customer_email=customer_email,
         )
         order.status = row["status"]
         order.truck_id = row["truck_id"]
-        order.target_delivery_date = (
-            row["target_delivery_date"].isoformat() if row["target_delivery_date"] else order.target_delivery_date
-        )
-        order.updated_at = row["updated_at"].isoformat() if row["updated_at"] else order.updated_at
+        order.target_delivery_date = resumed_utc_iso(row["target_delivery_date"]) or order.target_delivery_date
+        order.updated_at = resumed_utc_iso(row["updated_at"]) or order.updated_at
         return order

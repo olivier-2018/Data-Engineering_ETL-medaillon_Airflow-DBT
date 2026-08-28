@@ -54,9 +54,13 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     -- ============================= generator_ro =========================
     -- data_generators' only DB connection: read-only, and only against
     -- silver + reference - never iot (bronze), which it only ever writes to
-    -- indirectly via Kafka. Used solely for startup state-resume reads
-    -- (existing customers/open orders/invoices/fleet/stock/active zones),
-    -- never as a live per-tick dependency - see the redesign plan §3/§3c.
+    -- indirectly via Kafka. Used for startup state-resume reads (existing
+    -- customers/open orders/invoices/fleet/stock/active zones - see the
+    -- redesign plan §3/§3c) plus a handful of live, one-shot per-tick
+    -- orphan-avoidance checks (db.py's customer_exists_in_silver() /
+    -- purchase_order_ids_in_silver() / paid_purchase_order_ids_in_silver() -
+    -- see TODO.md's "avoid orphans" items) - never a blocking dependency,
+    -- just a cheap SELECT the caller skips its action on if negative.
     GRANT USAGE ON SCHEMA silver, reference TO ${GENERATOR_DB_USER};
     GRANT SELECT ON ALL TABLES IN SCHEMA silver TO ${GENERATOR_DB_USER};
     GRANT SELECT ON ALL TABLES IN SCHEMA reference TO ${GENERATOR_DB_USER};

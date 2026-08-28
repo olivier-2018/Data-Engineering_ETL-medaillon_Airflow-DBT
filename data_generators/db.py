@@ -1,6 +1,10 @@
-"""Startup-only, read-only Postgres bootstrap reads (generator_ro role) -
-resumes in-memory state after a process restart. Never used as a live
-per-tick dependency; see the redesign plan §3/§3c for why."""
+"""Read-only Postgres access (generator_ro role): startup bootstrap reads
+(resumes in-memory state after a process restart - see the redesign plan
+§3/§3c) plus a handful of live, one-shot per-tick orphan-avoidance checks
+(the functions below load_bootstrap_state() - see their own docstrings and
+TODO.md's "avoid orphans" items). The live checks are never a blocking
+dependency: each is a single SELECT, and callers skip their action for the
+current tick if it comes back negative rather than waiting."""
 from __future__ import annotations
 
 import logging
@@ -109,3 +113,64 @@ def load_bootstrap_state() -> dict:
         "line_items": line_items,
         "open_invoices": open_invoices,
     }
+
+
+# ===========================================================================
+# Live, per-tick orphan-avoidance checks (unlike load_bootstrap_state above,
+# these run continuously, not just at startup) - see TODO.md's "avoid
+# orphans" items. Each is a single one-shot SELECT, never a blocking/retry
+# loop: if a check comes back negative, the caller just skips its action for
+# this tick and tries again naturally on a later one (new customers/orders
+# keep arriving at their own configured rate regardless), rather than
+# waiting for silver to catch up. This deliberately does NOT reintroduce a
+# per-tick dependency on silver for the generator's own business decisions -
+# it only guards against emitting an event whose parent hasn't been *seen in
+# silver* yet, which would otherwise get permanently quarantined as an
+# orphan by the corresponding *_to_silver.py job's own orphan check.
+# ===========================================================================
+
+def customer_exists_in_silver(customer_id: str) -> bool:
+    """Used before creating a purchase order for a customer, so the order's
+    customer_id is never a silver-side orphan by the time
+    purchase_orders_to_silver.py's own orphan check runs."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM silver.customers_current WHERE customer_id = %s::uuid",
+                (customer_id,),
+            )
+            return cur.fetchone() is not None
+
+
+def purchase_order_ids_in_silver(purchase_order_ids: list[str]) -> set[str]:
+    """Used to defer a purchase order's invoice/line-item creation until its
+    own 'created' event has actually landed in silver, avoiding an orphan
+    rejection in invoices_to_silver.py/product_on_orders_to_silver.py."""
+    if not purchase_order_ids:
+        return set()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT purchase_order_id FROM silver.purchase_orders_current "
+                "WHERE purchase_order_id = ANY(%s::uuid[])",
+                ([str(pid) for pid in purchase_order_ids],),
+            )
+            return {str(r[0]) for r in cur.fetchall()}
+
+
+def paid_purchase_order_ids_in_silver(purchase_order_ids: list[str]) -> set[str]:
+    """Used before Dispatcher pulls an order onto a truck - returns which of
+    the given purchase_order_ids show a post-payment status in
+    silver.purchase_orders_current (anything past 'invoiced'), confirming
+    the payment transition has actually landed there, not just in the
+    generator's own in-memory state."""
+    if not purchase_order_ids:
+        return set()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT purchase_order_id FROM silver.purchase_orders_current "
+                "WHERE purchase_order_id = ANY(%s::uuid[]) AND status NOT IN ('created', 'invoiced')",
+                ([str(pid) for pid in purchase_order_ids],),
+            )
+            return {str(r[0]) for r in cur.fetchall()}

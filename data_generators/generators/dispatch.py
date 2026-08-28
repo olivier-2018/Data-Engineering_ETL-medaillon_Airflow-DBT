@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+import db
 from .helpers import utc_now
 
 logger = logging.getLogger(__name__)
@@ -44,14 +45,29 @@ class Dispatcher:
         capacity = self.cfg["trucks"]["capacity_products"]
         now = utc_now()
 
+        # Confirms each candidate's payment has actually landed in
+        # silver.purchase_orders_current before it's eligible for dispatch -
+        # not just the generator's own in-memory "on-hold" status - avoiding
+        # a dispatch decision the pipeline can't yet see (see TODO.md's
+        # "avoid orphans" items). One batched query per Dispatcher.tick()
+        # call (not per zone) covering every zone's candidates at once. No
+        # blocking: an order not yet confirmed just stays in its zone's
+        # queue and is reconsidered next tick, same as any other order still
+        # waiting on min_batch_size/max_wait_minutes.
+        on_hold_candidates = [o for o in orders.values() if o.status == "on-hold" and not o.claimed]
+        confirmed_paid_ids = (
+            db.paid_purchase_order_ids_in_silver([o.purchase_order_id for o in on_hold_candidates])
+            if on_hold_candidates else set()
+        )
+
         for zone in self.zones:
             if not self.free_trucks:
                 return
 
             queue = sorted(
                 (
-                    o for o in orders.values()
-                    if o.status == "on-hold" and o.zone_id == zone["zone_id"] and not o.claimed
+                    o for o in on_hold_candidates
+                    if o.zone_id == zone["zone_id"] and o.purchase_order_id in confirmed_paid_ids
                 ),
                 key=lambda o: o.updated_at,
             )
