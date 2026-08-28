@@ -720,7 +720,6 @@ services:
     mem_limit: 160m
     memswap_limit: 160m
     cpus: '0.15'
-    profiles: ["documentation"]
 
 networks:
   airflow_network:

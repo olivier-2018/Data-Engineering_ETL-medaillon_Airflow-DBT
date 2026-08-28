@@ -60,7 +60,7 @@ echo "=== Stage 7: Observability (Grafana + Loki/Promtail) ==="
 docker compose up -d grafana loki promtail
 
 echo "=== Stage 8: dbt docs (generates fresh docs, then serves them) ==="
-docker compose --profile documentation up -d --build dbt-docs
+docker compose up -d --build dbt-docs
 
 cat <<EOF
 
