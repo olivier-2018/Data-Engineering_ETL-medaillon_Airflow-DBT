@@ -45,6 +45,17 @@ def main() -> None:
         .option("kafka.bootstrap.servers", bootstrap)
         .option("subscribe", TOPIC)
         .option("startingOffsets", "latest")
+        # Without this, the job crashes outright (OffsetOutOfRangeException)
+        # if the checkpoint's stored offset has fallen behind Kafka's own
+        # log retention (KAFKA_LOG_RETENTION_HOURS=24) - e.g. the stack was
+        # stopped for longer than 24h and those segments were deleted before
+        # the job could resume. Confirmed happening in practice. With this
+        # set, Spark logs a warning and skips ahead to the earliest offset
+        # Kafka can still serve instead of crashing - some in-between pings
+        # are unrecoverably gone either way (the source data itself expired),
+        # this only changes "job dies and needs manual intervention" to
+        # "job keeps running, resumes from what's actually available."
+        .option("failOnDataLoss", "false")
         .load()
     )
 
