@@ -32,6 +32,12 @@ _SEGMENTS = [
     "doctor", "dentist", "teacher", "engineer", "lawyer", "nurse",
     "architect", "accountant", "electrician", "pharmacist",
 ]
+_ADDRESSES = [
+    "Bahnhofstrasse", "Seestrasse", "Marktgasse", "Loewenstrasse", "Kramgasse",
+    "Spitalgasse", "Poststrasse", "Museumstrasse", "Gartenstrasse", "Bergstrasse",
+    "Dorfstrasse", "Kirchgasse", "Schulstrasse", "Industriestrasse", "Freie Strasse",
+    "Rue du Rhone", "Rue de Lausanne", "Rue du Marche", "Via Nassa", "Piazza Grande",
+]
 
 
 class Customer:
@@ -103,7 +109,7 @@ class Customer:
             customer_id=str(uuid.uuid4()),
             name=f"{first} {last}",
             email=email,
-            address=f"{random.randint(1, 200)} Bahnhofstrasse, {zone['city']}",
+            address=f"{random.randint(1, 200)} {random.choice(_ADDRESSES)}, {zone['city']}",
             tel=f"+41{random.randint(700000000, 799999999)}",
             country=zone["country"],
             city=zone["city"],
