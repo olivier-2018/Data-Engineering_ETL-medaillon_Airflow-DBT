@@ -12,6 +12,18 @@ cd /opt/dbt
 dbt deps --profiles-dir /opt/dbt
 dbt docs generate --profiles-dir /opt/dbt
 
+# This container writes into ./dbt/{logs,dbt_packages,target}, a bind mount
+# also touched by airflow-scheduler's own dbt calls (gold_dbt_dag.py) under
+# a different uid (50000 there vs. this image's own build-time uid). Files
+# created here would otherwise default to non-world-writable, blocking that
+# other uid from later opening them - e.g. PermissionError on
+# dbt/logs/dbt.log. Note umask does NOT help here: dbt deps' package
+# extraction (dbt_utils) explicitly chmods each extracted file to specific
+# bits, which bypasses the process umask entirely - confirmed by testing.
+# Explicit chmod after the fact is the only thing that reliably works.
+# gold_dbt_dag.py's BashOperator tasks do the same after every dbt call.
+chmod -R 777 /opt/dbt/logs /opt/dbt/dbt_packages /opt/dbt/target
+
 # python3's own static server, not nginx - avoids needing two entirely
 # different web-server tech stacks reconciled in one image just to serve
 # a handful of static files for a local demo tool.

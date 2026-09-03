@@ -39,7 +39,30 @@ from airflow.providers.standard.operators.bash import BashOperator
 from common.assets import GOLD_TRIGGER_ASSETS
 
 DBT_PROJECT_DIR = "/opt/dbt"
-DBT_CMD = f"cd {DBT_PROJECT_DIR} && dbt"
+
+
+def _dbt_bash(dbt_args: str) -> str:
+    """Run a dbt subcommand, then re-assert world-writable perms on
+    dbt/{logs,dbt_packages,target} - a bind mount also written by the
+    dbt-docs container's own dbt calls, under a different non-root uid.
+    Every dbt invocation appends to dbt/logs/dbt.log and dbt deps'
+    package extraction (dbt_utils) sets its own explicit permission bits
+    - both default to non-world-writable, which then blocks whichever uid
+    didn't create them (e.g. PermissionError on dbt/logs/dbt.log).
+    Note umask does NOT work for this: confirmed by testing that dbt deps'
+    extraction explicitly chmods each file, which bypasses the process
+    umask entirely - only an explicit chmod after the fact is reliable.
+    `; rc=$?; ... ; exit $rc` (not `&&`) so the chmod runs even if dbt
+    itself failed, while still propagating dbt's real exit code - a
+    trailing `&&` would run chmod only on success, and a bare `;` would
+    let a successful chmod mask a failed dbt run. dbt-docs' own
+    entrypoint.sh does the same chmod after its dbt calls."""
+    dirs = f"{DBT_PROJECT_DIR}/logs {DBT_PROJECT_DIR}/dbt_packages {DBT_PROJECT_DIR}/target"
+    return (
+        f"cd {DBT_PROJECT_DIR} && dbt {dbt_args} --profiles-dir {DBT_PROJECT_DIR}; "
+        f"rc=$?; chmod -R 777 {dirs} 2>/dev/null; exit $rc"
+    )
+
 
 with DAG(
     dag_id="gold_dbt_dag",
@@ -53,23 +76,23 @@ with DAG(
 ) as dag:
     dbt_deps = BashOperator(
         task_id="dbt_deps",
-        bash_command=f"{DBT_CMD} deps --profiles-dir {DBT_PROJECT_DIR}",
+        bash_command=_dbt_bash("deps"),
     )
     dbt_run_staging = BashOperator(
         task_id="dbt_run_staging",
-        bash_command=f"{DBT_CMD} run --select staging --profiles-dir {DBT_PROJECT_DIR}",
+        bash_command=_dbt_bash("run --select staging"),
     )
     dbt_snapshot = BashOperator(
         task_id="dbt_snapshot",
-        bash_command=f"{DBT_CMD} snapshot --profiles-dir {DBT_PROJECT_DIR}",
+        bash_command=_dbt_bash("snapshot"),
     )
     dbt_run = BashOperator(
         task_id="dbt_run",
-        bash_command=f"{DBT_CMD} run --profiles-dir {DBT_PROJECT_DIR}",
+        bash_command=_dbt_bash("run"),
     )
     dbt_test = BashOperator(
         task_id="dbt_test",
-        bash_command=f"{DBT_CMD} test --profiles-dir {DBT_PROJECT_DIR}",
+        bash_command=_dbt_bash("test"),
     )
     check_gold_row_counts = SQLCheckOperator(
         task_id="check_gold_row_counts",

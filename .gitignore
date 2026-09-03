@@ -45,5 +45,7 @@ env/
 
 # Claude Code
 .claude/
+.refact/
+CLAUDE.md
 logs/
 PROGRESS.md
