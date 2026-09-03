@@ -1,14 +1,18 @@
 #!/bin/bash
+#
 # Brings the stack up in dependency order with health-waits between stages.
-# Does NOT start data-generator - that's an intentional separate step
-# (`docker compose up -d data-generator --profile generator`) so synthetic
-# load is something you choose to turn on, not something that happens implicitly.
-# DOES start dbt-docs (Stage 8) - unlike the generator, there's no downside
-# to always having a fresh docs site available; it just regenerates and
-# serves static files, no ongoing synthetic load or side effects on the rest
-# of the pipeline.
+# But:
+#  - Does NOT start data-generator - that's an intentional separate step.
+#  - DOES start dbt-docs (Stage 8) - fresh docs site available available
+#
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+if [ ! -f .env ]; then
+    echo "ERROR: .env not found. Copy .env.example to .env and fill in the required values:" >&2
+    echo "  cp .env.example .env" >&2
+    exit 1
+fi
 
 wait_healthy() {
     local service="$1"
