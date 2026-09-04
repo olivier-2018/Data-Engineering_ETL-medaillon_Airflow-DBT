@@ -1,0 +1,55 @@
+{
+  "title": "Data Quality Trends",
+  "uid": "iot-data-quality-trends",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": {"from": "now-7d", "to": "now"},
+  "tags": ["iot-logistics", "backend"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Error rate trend per domain (daily)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('day', rejected_at) AS time, 'customers' AS domain, count(*) AS errors FROM silver.error_customers WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'products', count(*) FROM silver.error_products WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'purchase_orders', count(*) FROM silver.error_purchase_orders WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'product_on_orders', count(*) FROM silver.error_product_on_orders WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'invoices', count(*) FROM silver.error_invoices WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'inventory_changes', count(*) FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'truck_fleet', count(*) FROM silver.error_truck_fleet WHERE rejected_at > now() - interval '7 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', rejected_at), 'truck_positions', count(*) FROM silver.error_truck_positions WHERE rejected_at > now() - interval '7 days' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Error rate as % of ingestion volume (last 24h)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "WITH errors AS (SELECT 'customers' AS domain, count(*) AS error_count FROM silver.error_customers WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'products', count(*) FROM silver.error_products WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'purchase_orders', count(*) FROM silver.error_purchase_orders WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'product_on_orders', count(*) FROM silver.error_product_on_orders WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'invoices', count(*) FROM silver.error_invoices WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'inventory_changes', count(*) FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'truck_fleet', count(*) FROM silver.error_truck_fleet WHERE rejected_at > now() - interval '1 day' UNION ALL SELECT 'truck_positions', count(*) FROM silver.error_truck_positions WHERE rejected_at > now() - interval '1 day'), volume AS (SELECT 'customers' AS domain, count(*) AS event_count FROM iot.customer_events WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'products', count(*) FROM iot.product_events WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'purchase_orders', count(*) FROM iot.purchase_order_events WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'product_on_orders', count(*) FROM iot.product_on_order_events WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'invoices', count(*) FROM iot.invoice_events WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'inventory_changes', count(*) FROM iot.inventory_changes WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'truck_fleet', count(*) FROM iot.truck_fleet_events WHERE ingested_at > now() - interval '1 day' UNION ALL SELECT 'truck_positions', count(*) FROM iot.truck_position_events WHERE ingested_at > now() - interval '1 day') SELECT v.domain, e.error_count, v.event_count, round(100.0 * e.error_count / nullif(v.event_count + e.error_count, 0), 2) AS error_rate_pct FROM volume v JOIN errors e ON e.domain = v.domain ORDER BY error_rate_pct DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Top reason codes (last 7d)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT domain, reason_code, count(*) AS occurrences FROM (SELECT 'customers' AS domain, reason_code FROM silver.error_customers WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'products', reason_code FROM silver.error_products WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'purchase_orders', reason_code FROM silver.error_purchase_orders WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'product_on_orders', reason_code FROM silver.error_product_on_orders WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'invoices', reason_code FROM silver.error_invoices WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'inventory_changes', reason_code FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'truck_fleet', reason_code FROM silver.error_truck_fleet WHERE rejected_at > now() - interval '7 days' UNION ALL SELECT 'truck_positions', reason_code FROM silver.error_truck_positions WHERE rejected_at > now() - interval '7 days') t GROUP BY domain, reason_code ORDER BY occurrences DESC LIMIT 20",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

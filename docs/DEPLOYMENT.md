@@ -43,11 +43,16 @@ original 16GB target). The CPU sum exceeding the physical core count is fine and
 is a CFS bandwidth *ceiling*, not a rigid partition. Idle capacity from one container's unused ceiling is
 available to others in real time; it only matters that no single container's *actual* usage needs exceed its
 own ceiling at once. `cadvisor`/`prometheus` (below) are excluded from this total since they aren't started by
-`scripts/start.sh`.
+`scripts/start.sh` — start them explicitly with `docker compose up -d cadvisor prometheus` if you want them.
 
-`cAdvisor`/`Prometheus` (for a dedicated service-health metrics dashboard) were discussed and staged in
-`docker-compose.yml`/`config/prometheus/` during development, but **are not yet confirmed, applied, or
-measured** as of this writing — treat them as proposed, not current, until this note is updated.
+`cAdvisor`/`Prometheus` (for per-container CPU/memory metrics feeding a Grafana `prometheus` datasource) are now
+**confirmed working end-to-end**, including a real bug hit and fixed during confirmation — see
+[`docs/OBSERVABILITY.md`](OBSERVABILITY.md) for the full story. Measured (not guessed):
+
+| Service | `mem_limit` | `cpus:` | Measured steady-state | Rationale |
+|---|---|---|---|---|
+| `cadvisor` | 400m | 0.3 | ~110-150MB (27-37% of limit) | Raised from an original 200m, which **OOM-killed the container ~10 minutes into every run** (`docker inspect` confirmed `OOMKilled: true`) — this host's cgroup/overlay-mount count is higher than a minimal demo host, and cAdvisor's stats cache scales with it. `restart: unless-stopped` was also added (previously missing), since without it the OOM kill was silent and permanent until someone noticed every container metrics panel was empty. |
+| `prometheus` | 300m | 0.3 | ~250MB (~84% of limit) | Not confirmed broken, but close enough to the ceiling to be worth watching — raise if it starts OOMing as scrape targets or retention grow. |
 
 ## How the CPU numbers were actually derived (not guessed)
 

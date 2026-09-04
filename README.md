@@ -37,7 +37,8 @@ Kafka (KRaft)
 OpenWeatherMap ──► Airflow (hourly pull, not Spark) ──► iot.weather_observations (hypertable)
 
 Airflow 3 (LocalExecutor) orchestrates every batch/silver/gold step via a mix of operator types.
-Grafana + Loki (+ cAdvisor/Prometheus, planned) visualize live data and logs.
+Grafana + Loki visualize live data and logs; cAdvisor + Prometheus feed per-container CPU/memory metrics
+into Grafana (opt-in — not started by `scripts/start.sh`, see below).
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full breakdown, including *why* each domain is streaming vs. batch, and [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) for the complete schema reference.
@@ -77,17 +78,14 @@ Once `scripts/start.sh` finishes, these are the web UIs available:
 | Spark Master | http://localhost:8080 | Cluster state — registered workers, running/completed applications, cores/memory in use. |
 | Spark Worker 1 / 2 | http://localhost:8081 / http://localhost:8082 | Per-worker executor detail. |
 | dbt docs | http://localhost:9000 | Generated dbt lineage graph/catalog - opt-in, not started by default (see [`docs/DBT_MODEL.md`](docs/DBT_MODEL.md#10-generated-documentation-lineage-graph-catalog)): `docker compose --profile documentation up -d dbt-docs` (after generating it at least once via `dbt docs generate`). |
+| cAdvisor | http://localhost:8085 | Per-container CPU/memory/filesystem metrics, browsable directly - opt-in, not started by `scripts/start.sh`: `docker compose up -d cadvisor prometheus` (Prometheus scrapes cAdvisor; both feed the `prometheus` Grafana datasource). See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) for a real OOM issue hit and fixed while wiring this up. |
+| Prometheus | http://localhost:9090 | Query/explore the raw metrics cAdvisor exposes (`container_cpu_usage_seconds_total`, `container_memory_usage_bytes`, ...) directly, outside Grafana. |
 
-### Grafana dashboards (folder: "IoT Logistics")
+### Grafana dashboards (folders: `business` / `operations` / `backend`)
 
-Three dashboards are provisioned automatically — no manual import needed:
-
-- **Live Truck Map** — a Geomap panel plotting every truck's current position (`silver.truck_current_position`,
-  refreshed every 10s), fed directly by the persistent Structured Streaming job for near-real-time movement.
-- **Pipeline Health** — per-domain silver watermark lag, error-row counts, and bronze ingestion volume — the
-  first place to look if data seems stale or a job seems stuck.
-- **Gold KPIs** — revenue by delivery zone, average time-to-destination, and products currently below
-  their restock threshold.
+Dashboards are provisioned automatically — no manual import needed. See
+[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) for the current full list per folder; it grows as the
+Grafana dashboard rollout (`TODO_grafana-dev.md`) progresses.
 
 Every panel's query has been verified against real data (see [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)
 for exactly how). Grafana is also the way to browse **Loki** logs — Loki has no web UI of its own; use

@@ -1,0 +1,112 @@
+{
+  "title": "Backend Monitoring",
+  "uid": "iot-backend-monitoring",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "tags": ["iot-logistics", "backend"],
+  "templating": {
+    "list": [
+      {
+        "name": "container",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": "label_values(container_last_seen, name)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Bronze ingestion rate by domain",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('minute', ingested_at) AS time, 'customers' AS domain, count(*) AS events FROM iot.customer_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'products', count(*) FROM iot.product_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'purchase_orders', count(*) FROM iot.purchase_order_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'product_on_orders', count(*) FROM iot.product_on_order_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'invoices', count(*) FROM iot.invoice_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'inventory_changes', count(*) FROM iot.inventory_changes WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'truck_fleet', count(*) FROM iot.truck_fleet_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 UNION ALL SELECT date_trunc('minute', ingested_at), 'truck_positions', count(*) FROM iot.truck_position_events WHERE ingested_at > now() - interval '6 hours' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Streaming data rate (last 5 min)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT 'customers' AS domain, count(*) AS events_last_5min FROM iot.customer_events WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'products', count(*) FROM iot.product_events WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'purchase_orders', count(*) FROM iot.purchase_order_events WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'product_on_orders', count(*) FROM iot.product_on_order_events WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'invoices', count(*) FROM iot.invoice_events WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'inventory_changes', count(*) FROM iot.inventory_changes WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'truck_fleet', count(*) FROM iot.truck_fleet_events WHERE ingested_at > now() - interval '5 minutes' UNION ALL SELECT 'truck_positions', count(*) FROM iot.truck_position_events WHERE ingested_at > now() - interval '5 minutes' ORDER BY events_last_5min DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "DAG execution status (last 24h)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "postgres", "uid": "airflow_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dag_id, state, count(*) AS runs FROM public.dag_run WHERE start_date > now() - interval '24 hours' GROUP BY dag_id, state ORDER BY dag_id, state",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Per-container CPU",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"$container\"}[5m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Per-container memory",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [
+        {
+          "expr": "container_memory_usage_bytes{name=~\"$container\"}",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Kafka offset freshness",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT topic, partition, last_offset, updated_at, extract(epoch from (now()-updated_at)) AS staleness_seconds FROM control.kafka_offsets ORDER BY staleness_seconds DESC",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

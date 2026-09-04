@@ -47,29 +47,38 @@ Use it to:
 
 **http://localhost:3000** — login with `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD` from `.env`.
 
-Two datasources are provisioned automatically (`config/grafana/provisioning/datasources/datasources.yml`),
-with **pinned, stable UIDs** (`iot_postgres`, `loki`) — every dashboard JSON file references these exact UIDs,
-so if you ever edit the datasource provisioning, keep the `uid:` fields stable or every dashboard panel will
-show "Data source not found" (this happened during development — see `docs/DEPLOYMENT.md`).
+Four datasources are provisioned automatically (`config/grafana/provisioning/datasources/datasources.yml`),
+with **pinned, stable UIDs** (`iot_postgres`, `loki`, `prometheus`, `airflow_postgres`) — every dashboard JSON
+file references these exact UIDs, so if you ever edit the datasource provisioning, keep the `uid:` fields
+stable or every dashboard panel will show "Data source not found" (this happened during development). Note
+`prometheus` only has actual data behind it once cAdvisor + Prometheus are running (opt-in, see above).
 
-### Provisioned dashboards (folder: "IoT Logistics")
+### Provisioned dashboards (folders: `business` / `operations` / `backend`)
 
-| Dashboard | What it shows |
-|---|---|
-| **Live Truck Map** | A Geomap panel plotting `silver.truck_current_position` — the live view of where every truck currently is, color-coded by `truck_status`, on a fixed initial view (so zoom/pan survives the 10s auto-refresh). Below it, a table of trucks currently on a run (not `free`), with a live count of orders aboard each. |
-| **Pipeline Health** | `control.silver_watermarks` lag per domain (how far behind each silver job is), error-row counts per domain over the last 15 minutes, and bronze ingestion volume over the last 6 hours. |
-| **Gold KPIs** | Revenue by delivery zone (last 24h), average time-to-destination across delivered orders, and a table of products currently below their restock threshold. |
+Mid-rollout as of this writing (`TODO_grafana-dev.md` tracks the full plan) — currently provisioned:
 
-Every panel's query is verified directly against the live schema (not just checked for provisioning without
-error) whenever the underlying tables change.
+| Folder | Dashboard | What it shows |
+|---|---|---|
+| `operations` | **Live Truck Map** | A Geomap panel plotting `silver.truck_current_position` — the live view of where every truck currently is, color-coded by `truck_status`, on a fixed initial view (so zoom/pan survives the 10s auto-refresh). Below it, a table of trucks currently on a run (not `free`), with a live count of orders aboard each. |
+| `backend` | **Pipeline Health** | `control.silver_watermarks` lag per domain (how far behind each silver job is), error-row counts per domain over the last 15 minutes, and bronze ingestion volume over the last 6 hours. |
+| `backend` | **Backend Monitoring** | Bronze ingestion rate by domain, streaming data rate, Airflow DAG execution status (via the `airflow_postgres` datasource), per-container CPU/memory (selectable via a `$container` variable), Kafka offset freshness. |
+| `backend` | **Database Monitoring** | Postgres size/connections/cache-hit-ratio/dead-tuple health, Airflow metadata DB health, Postgres container CPU/memory, 30-day ingestion history, TimescaleDB hypertable inventory. |
+| `backend` | **Data Quality Trends** | Daily error-rate trend per domain, error rate as a % of ingestion volume, top rejection reason codes — the historical companion to Pipeline Health's point-in-time view. |
+| (General) | Gold KPIs | Still present pending retirement — its 3 panels (revenue by zone, on-time delivery, restock threshold) are being absorbed into a forthcoming `business/business_monitoring.json`. |
+
+`business` dashboards (customer/sales/delivery-performance views) and two more `operations`/`business` dashboards
+are still pending — see `TODO_grafana-dev.md` for the full plan. Every panel's query is verified directly
+against the live schema (not just checked for provisioning without error) whenever the underlying tables change.
 
 ### Adding or editing a dashboard
 
-Dashboard JSON files live in `config/grafana/dashboards/` and are mounted read-only into the Grafana container;
-the dashboard **provider** (`config/grafana/provisioning/dashboards/dashboards.yml`) auto-loads anything in that
-directory, so a new file just needs to exist there — no docker-compose changes required. Two things to get right:
+Dashboard JSON files live in `config/grafana/dashboards/<folder>/` (one subdirectory per Grafana folder) and
+are mounted read-only into the Grafana container; the dashboard **provider**
+(`config/grafana/provisioning/dashboards/dashboards.yml`, using `foldersFromFilesStructure: true`) auto-loads
+anything found there — a new file just needs to exist in the right subdirectory, no docker-compose changes
+required. Two things to get right:
 
-1. Reference datasources by their **pinned UID** (`iot_postgres`/`loki`), not by name.
+1. Reference datasources by their **pinned UID** (`iot_postgres`/`loki`/`prometheus`/`airflow_postgres`), not by name.
 2. After editing a dashboard's JSON file's content, `docker compose up -d grafana` alone will **not** pick up
    the change — Compose only recreates a container when the *service definition* changes, not when a
    bind-mounted file's contents change. Use `docker compose restart grafana` to force it to re-read.
@@ -90,11 +99,38 @@ API) — the same relationship Prometheus has to Grafana for metrics. All log br
 Promtail (the log shipper) auto-discovers every container on the host via the Docker socket
 (`docker_sd_configs`) — no per-service configuration needed when a new service is added to `docker-compose.yml`.
 
-## Metrics (CPU/memory/health per container)
+## cAdvisor + Prometheus — per-container metrics
 
 Postgres and Loki alone have no visibility into Docker's cgroups — neither can tell you a container's real CPU
 or memory usage. Getting that into Grafana needs a metrics *exporter* (something that reads cgroup accounting
-and re-exposes it) plus a time-series store to hold history. **cAdvisor + Prometheus were designed for this
-purpose and staged in this repo's config during development, but are not yet confirmed/applied** — see
-`docs/DEPLOYMENT.md` for current status. Until that's finalized, per-container resource usage in this project
-is checked manually via `docker stats`.
+and re-exposes it) plus a time-series store to hold history: **cAdvisor** (http://localhost:8085, also browsable
+directly — it ships its own minimal web UI) exports per-container `container_cpu_usage_seconds_total` /
+`container_memory_usage_bytes` / filesystem metrics; **Prometheus** (http://localhost:9090) scrapes cAdvisor
+every 15s (`config/prometheus/prometheus.yml`) and holds 24h of history. Both are confirmed working end-to-end
+as of this writing — a `prometheus`-uid datasource is provisioned in Grafana alongside `iot_postgres`/`loki`.
+
+**Opt-in, not part of `scripts/start.sh`**: start them explicitly with `docker compose up -d cadvisor prometheus`.
+
+**A real OOM bug was hit and fixed while confirming this pair works**: cAdvisor's original `mem_limit: 200m`
+was too tight for this host — `docker inspect cadvisor` showed `OOMKilled: true` roughly 10 minutes after every
+start (this host's actual cgroup/overlay-mount count is higher than a minimal demo host, and cAdvisor's
+in-memory stats cache scales with it). With no `restart:` policy configured, the container then stayed dead
+silently — every per-container CPU/memory panel in Grafana would just show "No data," with no error surfaced
+anywhere. Fixed by raising `mem_limit`/`memswap_limit` to 400m (measured steady-state after the fix: ~110-150MB,
+comfortable headroom) and adding `restart: unless-stopped`, matching the policy already used by the Spark
+streaming job and other long-running services. **Prometheus itself runs close to its own ceiling** (measured
+~250MB of its 300m limit, ~84%) — not confirmed broken, but worth watching if scrape targets or retention grow;
+raise `mem_limit` if it starts OOMing too.
+
+Useful PromQL for exploring a specific container directly (Grafana panel or Prometheus's own UI):
+
+```promql
+rate(container_cpu_usage_seconds_total{name="postgres"}[5m])
+container_memory_usage_bytes{name="grafana"}
+```
+
+`name` is the real Docker container name (confirmed via cAdvisor's raw `/metrics` output — cAdvisor also emits a
+large set of `container_label_com_docker_compose_*` labels per series if you need to filter/group by those
+instead).
+
+Until this pair is started, per-container resource usage can still be checked manually via `docker stats`.

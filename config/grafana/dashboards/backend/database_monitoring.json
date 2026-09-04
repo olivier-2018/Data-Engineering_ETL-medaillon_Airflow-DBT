@@ -1,0 +1,155 @@
+{
+  "title": "Database Monitoring",
+  "uid": "iot-database-monitoring",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "tags": ["iot-logistics", "backend"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "DB size",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT pg_size_pretty(pg_database_size(current_database())) AS db_size",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Active connections vs max",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT (SELECT count(*) FROM pg_stat_activity) AS active, current_setting('max_connections')::int AS max_connections",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cache hit ratio",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT round(100.0 * sum(heap_blks_hit) / nullif(sum(heap_blks_hit) + sum(heap_blks_read), 0), 2) AS cache_hit_ratio_pct FROM pg_statio_user_tables",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Airflow metadata DB health",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "postgres", "uid": "airflow_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT pg_size_pretty(pg_database_size(current_database())) AS size, (SELECT count(*) FROM pg_stat_activity) AS connections",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Largest tables",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT schemaname, relname, pg_size_pretty(pg_total_relation_size(format('%I.%I', schemaname, relname)::regclass)) AS size, pg_total_relation_size(format('%I.%I', schemaname, relname)::regclass) AS bytes FROM pg_stat_user_tables ORDER BY bytes DESC LIMIT 20",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Dead-tuple / autovacuum health",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 15",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Postgres container CPU",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "rate(container_cpu_usage_seconds_total{name=\"postgres\"}[5m])",
+          "legendFormat": "postgres",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Postgres container memory",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [
+        {
+          "expr": "container_memory_usage_bytes{name=\"postgres\"}",
+          "legendFormat": "postgres",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Ingestion history (30d)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('day', ingested_at) AS time, 'customers' AS domain, count(*) AS events FROM iot.customer_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'products', count(*) FROM iot.product_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'purchase_orders', count(*) FROM iot.purchase_order_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'product_on_orders', count(*) FROM iot.product_on_order_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'invoices', count(*) FROM iot.invoice_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'inventory_changes', count(*) FROM iot.inventory_changes WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'truck_fleet', count(*) FROM iot.truck_fleet_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 UNION ALL SELECT date_trunc('day', ingested_at), 'truck_positions', count(*) FROM iot.truck_position_events WHERE ingested_at > now() - interval '30 days' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "TimescaleDB hypertables",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 32},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT hypertable_name, num_dimensions FROM timescaledb_information.hypertables",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -597,6 +597,7 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: cadvisor
+    restart: unless-stopped
     ports:
       - "8085:8080"
     volumes:
@@ -609,13 +610,21 @@ services:
       - /dev/kmsg:/dev/kmsg
     networks:
       - airflow_network
-    mem_limit: 200m
-    memswap_limit: 200m
+    # 200m OOM-killed cAdvisor within ~10 minutes of every start (confirmed
+    # via `docker inspect` -> OOMKilled: true) - this host's actual cgroup/
+    # overlay-mount count is higher than a minimal demo host, and cAdvisor's
+    # in-memory stats cache scales with it. No restart policy meant it then
+    # silently stayed dead, breaking every container CPU/mem panel with no
+    # visible error anywhere in Grafana. 400m plus unless-stopped fixes both
+    # the ceiling and the silent-death failure mode.
+    mem_limit: 400m
+    memswap_limit: 400m
     cpus: '0.3'
 
   prometheus:
     image: prom/prometheus:v2.55.0
     container_name: prometheus
+    restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
