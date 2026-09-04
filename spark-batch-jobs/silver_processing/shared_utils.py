@@ -117,11 +117,15 @@ def upsert(
 
     `coalesce_cols` (e.g. a domain's "created_at", derived only from a
     one-time-ever event_type/status like "created" rather than re-sent on
-    every event) are set via `COALESCE(EXCLUDED.col, table.col)` instead of
-    a blind overwrite: pass NULL for that row's value whenever the current
-    incremental batch doesn't contain that entity's originating event, and
-    the existing stored value (if any) is left untouched rather than being
-    nulled out or overwritten with an unrelated later event's timestamp.
+    every event) are set via `COALESCE(table.col, EXCLUDED.col)` instead of
+    a blind overwrite: prefer whatever is already stored, and only fall
+    back to the incoming batch's value if nothing's stored yet (first-ever
+    write for that key) - the existing stored value is left untouched
+    rather than being overwritten with an unrelated later event's
+    timestamp, even though the incoming batch's computed value is almost
+    never NULL itself (callers derive it with their own earliest-event-in-
+    batch fallback, so the argument order here is what actually protects
+    the once-set value, not the incoming value's NULL-ness).
     `rows` tuples must be ordered key_cols + set_cols + coalesce_cols."""
     if not rows:
         return
@@ -130,7 +134,7 @@ def upsert(
     col_list = ", ".join(all_cols)
     set_clause = ", ".join(
         [f"{c} = EXCLUDED.{c}" for c in set_cols]
-        + [f"{c} = COALESCE(EXCLUDED.{c}, {table}.{c})" for c in coalesce_cols]
+        + [f"{c} = COALESCE({table}.{c}, EXCLUDED.{c})" for c in coalesce_cols]
     )
     conflict_cols = ", ".join(key_cols)
     with pg_conn() as conn:

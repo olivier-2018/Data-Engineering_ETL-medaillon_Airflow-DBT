@@ -15,6 +15,7 @@ select
     segment,
     verified_account,
     disabled_account,
+    created_at,
     dbt_valid_from,
     dbt_valid_to
 from {{ ref('customer_snapshot') }}

@@ -68,3 +68,39 @@ models:
     columns:
       - name: purchase_order_id
         data_tests: [not_null, unique]
+
+  - name: fact_delivery_performance
+    columns:
+      - name: purchase_order_id
+        data_tests: [not_null, unique]
+      - name: zone_id
+        data_tests:
+          - relationships:
+              to: ref('dim_delivery_zone')
+              field: zone_id
+      - name: is_on_time
+        data_tests: [not_null]
+
+  - name: fact_purchase_order_status_duration
+    columns:
+      - name: purchase_order_id
+        data_tests: [not_null]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: ['created', 'invoiced', 'paid', 'on-hold', 'loaded', 'in-transit', 'delivered', 'closed', 'cancelled']
+
+  - name: fact_sales
+    columns:
+      - name: product_on_order_id
+        data_tests: [not_null, unique]
+      - name: purchase_order_id
+        data_tests:
+          - relationships:
+              to: ref('fact_purchase_orders')
+              field: purchase_order_id
+      - name: product_key
+        data_tests:
+          - relationships:
+              to: ref('dim_product')
+              field: product_key
