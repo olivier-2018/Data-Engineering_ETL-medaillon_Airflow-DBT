@@ -44,7 +44,7 @@ echo "Creating data-* host directories ..."
 mkdir -p data-postgres data-airflow-postgres data-airflow-logs \
          data-kafka/kafka-logs data-kafka/secrets data-kafka/config data-kafka/data \
          data-spark-logs data-spark-master data-spark-worker-1 data-spark-worker-2 \
-         data-spark-checkpoints data-grafana data-loki
+         data-spark-checkpoints data-grafana data-loki data-prometheus
 
 # Every container runs as a different, non-host-matching uid/gid.
 # Ex: Airflow: uid=50000 gid=0; Spark: uid=185 gid=185; etc.
@@ -53,7 +53,7 @@ mkdir -p data-postgres data-airflow-postgres data-airflow-logs \
 # Note: acceptable for a local, single-user demo ONLY (no Production).
 chmod 777 data-airflow-logs data-kafka data-spark-logs data-spark-master \
           data-spark-worker-1 data-spark-worker-2 data-spark-checkpoints \
-          data-grafana data-loki dbt
+          data-grafana data-loki data-prometheus dbt
 # data-kafka specifically: Kafka's official image runs directly as a fixed
 # non-root uid (appuser, uid 1000) with no self-healing entrypoint (unlike
 # the Postgres images used elsewhere in this project, which start as root
