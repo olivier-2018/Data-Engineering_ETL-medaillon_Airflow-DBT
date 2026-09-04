@@ -431,8 +431,13 @@ services:
       POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
       POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD must be set in .env}
       POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow_metadata}
+      # Consumed by initdb/01-create-grafana-ro-role.sh - only runs on a
+      # truly empty data dir, see that script's own header comment.
+      GRAFANA_AIRFLOW_DB_USER: ${GRAFANA_AIRFLOW_DB_USER:-grafana_airflow_ro}
+      GRAFANA_AIRFLOW_DB_PASSWORD: ${GRAFANA_AIRFLOW_DB_PASSWORD:?GRAFANA_AIRFLOW_DB_PASSWORD must be set in .env}
     volumes:
       - ./data-airflow-postgres:/var/lib/postgresql/data
+      - ./config/airflow-postgres/initdb:/docker-entrypoint-initdb.d:ro
     networks:
       - airflow_network
     mem_limit: 384m
@@ -642,12 +647,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-iot_database}
       PIPELINE_DB_USER: ${PIPELINE_DB_USER:-pipeline_rw}
       PIPELINE_DB_PASSWORD: ${PIPELINE_DB_PASSWORD}
+      AIRFLOW_DB_NAME: ${AIRFLOW_DB_NAME:-airflow_metadata}
+      GRAFANA_AIRFLOW_DB_USER: ${GRAFANA_AIRFLOW_DB_USER:-grafana_airflow_ro}
+      GRAFANA_AIRFLOW_DB_PASSWORD: ${GRAFANA_AIRFLOW_DB_PASSWORD}
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/grafana/dashboards:/etc/grafana/dashboards:ro
       - ./data-grafana:/var/lib/grafana
     depends_on:
       - postgres
+      - airflow-postgres
     networks:
       - airflow_network
     # Measured steady-state via docker stats: ~63MB RSS, <0.2% CPU.

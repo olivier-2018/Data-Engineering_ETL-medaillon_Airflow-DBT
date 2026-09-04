@@ -30,3 +30,17 @@ datasources:
     access: proxy
     url: http://prometheus:9090
     editable: true
+
+  - name: airflow_postgres
+    uid: airflow_postgres
+    type: postgres
+    access: proxy
+    url: airflow-postgres:5432
+    database: ${AIRFLOW_DB_NAME}
+    user: ${GRAFANA_AIRFLOW_DB_USER}
+    secureJsonData:
+      password: ${GRAFANA_AIRFLOW_DB_PASSWORD}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1500
+    editable: true
