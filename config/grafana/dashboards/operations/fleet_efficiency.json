@@ -1,0 +1,66 @@
+{
+  "title": "Fleet & Logistics Efficiency",
+  "uid": "iot-fleet-efficiency",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": {"from": "now-24h", "to": "now"},
+  "tags": ["iot-logistics", "operations"],
+  "description": "Time-in-status is read from bronze iot.truck_position_events directly (not silver.truck_current_position, which only keeps latest state), mirroring fact_shipments' own precedent for lifecycle timestamps.",
+  "panels": [
+    {
+      "id": 1,
+      "type": "piechart",
+      "title": "Fleet status mix (current)",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT truck_status, count(*) FROM silver.truck_current_position GROUP BY truck_status", "refId": "A"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Time in each truck status (last 24h)",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "h"}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "WITH events AS (SELECT truck_id, truck_status, event_at, LEAD(event_at) OVER (PARTITION BY truck_id ORDER BY event_at) AS next_event_at FROM iot.truck_position_events WHERE event_at > now() - interval '24 hours') SELECT truck_status, sum(extract(epoch FROM (coalesce(next_event_at, now()) - event_at)))/3600.0 AS total_hours FROM events GROUP BY truck_status ORDER BY total_hours DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "barchart",
+      "title": "Deliveries completed per truck (7d)",
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT t.name, count(*) AS deliveries FROM gold.fact_shipments s JOIN gold.dim_truck t ON t.truck_key = s.truck_key AND t.dbt_valid_to IS NULL WHERE s.is_delivered AND s.delivery_time > now() - interval '7 days' GROUP BY t.name ORDER BY deliveries DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Avg orders aboard per active run",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT avg(orders_aboard) FROM (SELECT tp.truck_id, (SELECT count(*) FROM silver.purchase_orders_current po WHERE po.truck_id = tp.truck_id AND po.status = 'in-transit') AS orders_aboard FROM silver.truck_current_position tp WHERE tp.truck_status != 'free') t",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

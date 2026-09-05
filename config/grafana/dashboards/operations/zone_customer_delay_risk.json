@@ -1,0 +1,101 @@
+{
+  "title": "Zone & Customer Delay Risk",
+  "uid": "iot-zone-customer-risk",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "tags": ["iot-logistics", "operations"],
+  "templating": {
+    "list": [
+      {
+        "name": "zone",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "iot_postgres"},
+        "query": "SELECT city FROM gold.dim_delivery_zone WHERE is_active ORDER BY city",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "SLA breach count",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "orange", "value": 1},
+        {"color": "red", "value": 10}
+      ]}}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT count(*) FROM gold.fact_purchase_orders f JOIN silver.purchase_orders_current po ON po.purchase_order_id = f.purchase_order_id WHERE f.status = 'in-transit' AND po.target_delivery_date < now()",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Orders at risk (live)",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT f.purchase_order_id, f.truck_id, dz.city AS zone_city, po.target_delivery_date, now() - po.target_delivery_date AS overdue_by FROM gold.fact_purchase_orders f JOIN silver.purchase_orders_current po ON po.purchase_order_id = f.purchase_order_id LEFT JOIN gold.dim_delivery_zone dz ON dz.zone_id = f.zone_id WHERE f.status = 'in-transit' AND po.target_delivery_date < now() AND dz.city IN (${zone:sqlstring}) ORDER BY overdue_by DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Zone throughput, last 14d",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dz.city, date_trunc('day', d.date) AS time, count(*) AS orders FROM gold.fact_purchase_orders f JOIN gold.dim_datetime d ON d.date_key = f.order_date_key JOIN gold.dim_delivery_zone dz ON dz.zone_id = f.zone_id WHERE d.date > current_date - interval '14 days' AND dz.city IN (${zone:sqlstring}) GROUP BY 1,2 ORDER BY 2,1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "barchart",
+      "title": "Zone average delay, last 14d",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dz.city, avg(fdp.delay_days) AS avg_delay_days, count(*) AS delivered_orders FROM gold.fact_delivery_performance fdp JOIN gold.dim_delivery_zone dz ON dz.zone_id = fdp.zone_id WHERE fdp.delivery_time > now() - interval '14 days' AND dz.city IN (${zone:sqlstring}) GROUP BY dz.city ORDER BY avg_delay_days DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Customers with recurring delays",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dc.name, count(*) AS delivered_orders, round(100.0*avg(CASE WHEN NOT fdp.is_on_time THEN 1 ELSE 0 END),1) AS pct_late, avg(fdp.delay_days) AS avg_delay_days FROM gold.fact_delivery_performance fdp JOIN gold.dim_customer dc ON dc.customer_key = fdp.customer_key AND dc.dbt_valid_to IS NULL GROUP BY dc.name HAVING count(*) >= 3 ORDER BY pct_late DESC LIMIT 20",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
