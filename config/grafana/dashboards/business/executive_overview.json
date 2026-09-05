@@ -1,0 +1,102 @@
+{
+  "title": "Executive Overview",
+  "uid": "iot-executive-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": {"from": "now-24h", "to": "now"},
+  "tags": ["iot-logistics", "business"],
+  "description": "Single-pane summary - every panel reuses a query already verified in another dashboard (Business Monitoring, Pipeline Health, Zone & Customer Delay Risk). No new SQL.",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Revenue today",
+      "gridPos": {"h": 8, "w": 4, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "currencyCHF"}, "overrides": []},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT coalesce(sum(line_amount), 0) FROM gold.fact_sales WHERE updated_at::date = current_date", "refId": "A"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Orders in flight",
+      "gridPos": {"h": 8, "w": 4, "x": 4, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT count(*) FROM gold.fact_purchase_orders WHERE status NOT IN ('delivered','closed','cancelled')", "refId": "A"}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "On-time delivery % (30d)",
+      "gridPos": {"h": 8, "w": 4, "x": 8, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [
+        {"color": "red", "value": null},
+        {"color": "orange", "value": 70},
+        {"color": "green", "value": 90}
+      ]}}, "overrides": []},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT round(100.0*avg(CASE WHEN is_on_time THEN 1 ELSE 0 END),1) AS pct_on_time FROM gold.fact_delivery_performance WHERE delivery_time > now() - interval '30 days'", "refId": "A"}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Pipeline lag (max across domains)",
+      "gridPos": {"h": 8, "w": 4, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "orange", "value": 600},
+        {"color": "red", "value": 1800}
+      ]}}, "overrides": []},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT max(extract(epoch from (now() - last_processed_ingested_at))) AS max_lag_seconds FROM control.silver_watermarks", "refId": "A"}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Open SLA breaches",
+      "gridPos": {"h": 8, "w": 4, "x": 16, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "orange", "value": 1},
+        {"color": "red", "value": 10}
+      ]}}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT count(*) FROM gold.fact_purchase_orders f JOIN silver.purchase_orders_current po ON po.purchase_order_id = f.purchase_order_id WHERE f.status = 'in-transit' AND po.target_delivery_date < now()",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Errors, last 15 min",
+      "gridPos": {"h": 8, "w": 4, "x": 20, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "orange", "value": 1},
+        {"color": "red", "value": 10}
+      ]}}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT sum(cnt) FROM (SELECT count(*) AS cnt FROM silver.error_customers WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_products WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_purchase_orders WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_product_on_orders WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_invoices WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_inventory_changes WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_truck_fleet WHERE rejected_at > now() - interval '15 minutes' UNION ALL SELECT count(*) FROM silver.error_truck_positions WHERE rejected_at > now() - interval '15 minutes') t",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
