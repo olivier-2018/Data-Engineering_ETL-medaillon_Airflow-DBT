@@ -1,12 +1,13 @@
 # IoT Logistics Pipeline Demo - Airflow 3 + dbt + Spark medallion pipeline
 # Biel (Switzerland) warehouse scenario. See docs/ARCHITECTURE.md.
-# Resource budget: ~11.3GB actual usage against a 16GB target - see docs/DEPLOYMENT.md.
+# Resource budget: ~12GB actual usage against a 16GB target - see docs/DEPLOYMENT.md.
 
 services:
   # ===================================================================
-  # Kafka (KRaft mode, single node - no Zookeeper) - pipeline entry point
+  # IoT mqtt message pipeline entry point
   # ===================================================================
   kafka:
+  # Kafka (KRaft mode, single node - no Zookeeper)
     image: apache/kafka:3.7.0
     container_name: kafka
     ports:
@@ -58,17 +59,14 @@ services:
       retries: 10
       start_period: 30s
 
-  # ===================================================================
-  # One-shot Kafka topic provisioning - creates/widens the 8 iot.* topics
-  # to config/kafka/topics.yml's configured partition count. Runs once per
-  # stack startup, then exits; downstream producers/consumers depend on it
-  # completing (condition: service_completed_successfully) rather than just
-  # on Kafka being healthy, since Kafka's own broker-side auto-create
-  # defaults to num.partitions=1 - without this gate, whichever
-  # producer/consumer happened to touch a topic first would still win the
-  # race and leave it single-partition. See docs/ARCHITECTURE.md.
-  # ===================================================================
   kafka-init:
+  # One-shot Kafka topic provisioning 
+    # - creates/widens the 8 iot.* topics to config/kafka/topics.yml's configured partition count. 
+    # - Runs once per stack startup, then exits
+    # - Notes:
+    #   - downstream producers/consumers depend on it completing (condition: service_completed_successfully) 
+    #   - relying on Kafka being healthy would mean producer/consumer which touches a topic first might trigger
+    #     Kafka's own broker-side auto-create which defaults to num.partitions=1 
     build:
       context: ./config/kafka
     container_name: kafka-init
@@ -81,10 +79,8 @@ services:
       - airflow_network
     restart: "no"
 
-  # ===================================================================
-  # Kafka UI - browse topics/partitions/consumer groups, inspect messages
-  # ===================================================================
   kafka-ui:
+  # Kafka UI - browse topics/partitions/consumer groups, inspect messages
     image: provectuslabs/kafka-ui:v0.7.2
     container_name: kafka-ui
     ports:
@@ -144,10 +140,10 @@ services:
     profiles: ["generator"]
 
   # ===================================================================
-  # Spark cluster - 1 persistent Structured Streaming job (truck-position)
-  # + periodic batch jobs (bronze ingestion, silver transforms)
+  # Spark cluster + 2 executors (workers) 
   # ===================================================================
   spark-master:
+  # Spark Standalone Master - coordinates the cluster, no driver/executor work itself
     build:
       context: .
       dockerfile: config/spark/Dockerfile
@@ -209,6 +205,7 @@ services:
       retries: 5
 
   spark-worker-1:
+  # Spark Standalone Worker 1 - runs executors for both streaming and batch jobs
     build:
       context: .
       dockerfile: config/spark/Dockerfile
@@ -249,6 +246,7 @@ services:
       retries: 5
 
   spark-worker-2:
+  # Spark Standalone Worker 2 - runs executors for both streaming and batch jobs
     build:
       context: .
       dockerfile: config/spark/Dockerfile
@@ -297,40 +295,18 @@ services:
       timeout: 5s
       retries: 5
 
-  # ===================================================================
-  # The ONE persistent Structured Streaming job (truck-position, §1a),
-  # run as its own long-lived service rather than launched via Airflow.
-  #
-  # ARCHITECTURAL CORRECTION (found by testing, not assumed): Spark
-  # Standalone does not support --deploy-mode cluster for Python
-  # applications at all ("Cluster deploy mode is currently not supported
-  # for python applications on standalone clusters") - this ruled out the
-  # original plan of having Airflow's SparkSubmitOperator submit this job
-  # in cluster mode and return immediately. Client mode's driver runs
-  # wherever spark-submit is invoked from and blocks for the query's
-  # entire (indefinite) lifetime - completely wrong for an Airflow task,
-  # which would occupy a LocalExecutor slot forever. Running it as its own
-  # docker-compose service with `restart: unless-stopped` sidesteps this
-  # cleanly: Docker supervises it directly (replacing the need for
-  # bronze_streaming_supervisor_dag.py to actively resubmit), and the
-  # driver's client-mode process just *is* this container's main process.
-  # ===================================================================
   spark-streaming-truck-position:
+  # persistent Structured Streaming job (truck-position)
+    # - runs as its own long-lived service rather than launched via Airflow.
+    # - has its own SparkUI (job/stage/task detail) pinned to port 4040
+    # - info: 
+    #   - Spark Standalone does not support --deploy-mode cluster for Python applications on standalone clusters
+    #   - Since Client mode's driver runs wherever spark-submit is invoked, it would block Airflow's LocalExecutor slot
+    #   - Running therefore the streaming job as its own docker-compose service with `restart: unless-stopped` sidesteps this cleanly: Docker supervises it directly, and the driver's client-mode process just *is* this container's main process.
     build:
       context: .
       dockerfile: config/spark/Dockerfile
     container_name: spark-streaming-truck-position
-    # This driver's own SparkUI (job/stage/task detail - what Spark Master's
-    # "Application Detail UI" link points to) is pinned to port 4040 - the
-    # sole persistent job gets the "nice" round port; every batch job (see
-    # airflow-scheduler below) starts from 4041 upward. spark.driver.host
-    # stays the container's Docker-network name (required for executor RPC -
-    # workers must reach the driver by a real Docker-resolvable address).
-    # SPARK_PUBLIC_DNS=localhost is what actually fixes the clickable link:
-    # Spark's WebUI base class reports this env var (if set) as its public
-    # hostname independently of spark.driver.host, so the "Application Detail
-    # UI" link Master shows becomes http://localhost:4040/ - confirmed by
-    # testing that these are two genuinely separate settings.
     ports:
       - "4040:4040"
     command: >
@@ -380,6 +356,7 @@ services:
   # iot_database - TimescaleDB + PostGIS (bronze/silver/gold/control)
   # ===================================================================
   postgres:
+  # TimescaleDB + PostGIS - the pipeline's own bronze/silver/gold/control database
     build:
       context: ./config/postgres
     container_name: postgres
@@ -423,6 +400,7 @@ services:
   # Airflow 3 (LocalExecutor) - own dedicated metadata database
   # ===================================================================
   airflow-postgres:
+  # Airflow3 metadata database - separate from the iot_database Postgres above (which is for the pipeline itself, not Airflow's own metadata)
     image: postgres:15-alpine
     container_name: airflow-postgres
     ports:
@@ -450,6 +428,7 @@ services:
       retries: 5
 
   airflow-init:
+  # One-shot Airflow3 metadata DB migration - runs once per stack startup, then exits
     build:
       context: ./config/airflow
     container_name: airflow-init
@@ -485,6 +464,7 @@ services:
     restart: "no"
 
   airflow-api-server:
+  # Airflow3 API server - handles DAG run/task instance requests from the UI and external clients (e.g. SparkSubmitOperator)
     build:
       context: ./config/airflow
     container_name: airflow-api-server
@@ -516,6 +496,7 @@ services:
     restart: unless-stopped
 
   airflow-scheduler:
+  # Airflow3 scheduler - schedules DAG runs and task instances, including SparkSubmitOperator jobs
     build:
       context: ./config/airflow
     container_name: airflow-scheduler
@@ -568,6 +549,7 @@ services:
     restart: unless-stopped
 
   airflow-dag-processor:
+  # Airflow3 DAG processor - runs DAGs, including SparkSubmitOperator jobs
     build:
       context: ./config/airflow
     container_name: airflow-dag-processor
@@ -587,62 +569,13 @@ services:
     restart: unless-stopped
 
   # ===================================================================
-  # Observability: Grafana (live truck map + pipeline/gold dashboards)
-  # + Loki/Promtail (lightweight log search, not Elasticsearch/Kibana)
-  # + cAdvisor/Prometheus (per-container CPU/mem/health metrics) - needed
-  # because Postgres/Loki alone have no way to expose container-level
-  # resource/health metrics; this is the standard lightweight way to get
-  # that into Grafana without a heavier stack.
+  # Observability: Grafana + Loki/Promtail + cAdvisor/Prometheus 
   # ===================================================================
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    container_name: cadvisor
-    restart: unless-stopped
-    ports:
-      - "8085:8080"
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    devices:
-      - /dev/kmsg:/dev/kmsg
-    networks:
-      - airflow_network
-    # 200m OOM-killed cAdvisor within ~10 minutes of every start (confirmed
-    # via `docker inspect` -> OOMKilled: true) - this host's actual cgroup/
-    # overlay-mount count is higher than a minimal demo host, and cAdvisor's
-    # in-memory stats cache scales with it. No restart policy meant it then
-    # silently stayed dead, breaking every container CPU/mem panel with no
-    # visible error anywhere in Grafana. 400m plus unless-stopped fixes both
-    # the ceiling and the silent-death failure mode.
-    mem_limit: 400m
-    memswap_limit: 400m
-    cpus: '0.3'
-
-  prometheus:
-    image: prom/prometheus:v2.55.0
-    container_name: prometheus
-    restart: unless-stopped
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=24h
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./data-prometheus:/prometheus
-    depends_on:
-      - cadvisor
-    networks:
-      - airflow_network
-    mem_limit: 300m
-    memswap_limit: 300m
-    cpus: '0.3'
 
   grafana:
+  # Grafana is the main observability dashboard,
+    # - live truck positions + pipeline/gold metrics. 
+    # - reads from Postgres (pipeline/gold), Prometheus (container CPU/mem/health) and Loki (container logs).
     image: grafana/grafana:11.1.0
     container_name: grafana
     ports:
@@ -674,6 +607,7 @@ services:
     cpus: '0.2'
 
   loki:
+  #  Loki is a lightweight log search and analytics engine (unlike Elasticsearch/Kibana)
     image: grafana/loki:3.1.0
     container_name: loki
     command: -config.file=/etc/loki/local-config.yaml
@@ -689,6 +623,7 @@ services:
     cpus: '0.2'
 
   promtail:
+  # Promtail is a lightweight log shipper that sends container logs to Loki (aka log agent)
     image: grafana/promtail:3.1.0
     container_name: promtail
     command: -config.file=/etc/promtail/config.yml
@@ -704,19 +639,66 @@ services:
     memswap_limit: 100m
     cpus: '0.2'
 
-  # ===================================================================
-  # dbt-docs - generates AND serves dbt's docs site in one container
-  # (dbt deps && dbt docs generate, then python3 -m http.server - see
-  # config/dbt-docs/entrypoint.sh). One command is enough:
-  # `docker compose --profile documentation up -d dbt-docs` always produces
-  # a fresh site, no separate manual generate step needed first. Runs its
-  # own dbt CLI directly against Postgres rather than `docker exec`-ing
-  # into airflow-scheduler from inside this container - that would need the
-  # host's Docker socket mounted in, handing this container control over
-  # every container on the host for the sake of a static-docs viewer, a
-  # disproportionate privilege expansion this project deliberately avoids.
-  # ===================================================================
+  cadvisor:
+  # cadvisor provides(er-container CPU/mem/health metrics
+  # - standard lightweight way to get resource/health metrics into Grafana without a heavier stack.
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    networks:
+      - airflow_network
+    # 200m OOM-killed cAdvisor within ~10 minutes of every start (confirmed
+    # via `docker inspect` -> OOMKilled: true) - this host's actual cgroup/
+    # overlay-mount count is higher than a minimal demo host, and cAdvisor's
+    # in-memory stats cache scales with it. No restart policy meant it then
+    # silently stayed dead, breaking every container CPU/mem panel with no
+    # visible error anywhere in Grafana. 400m plus unless-stopped fixes both
+    # the ceiling and the silent-death failure mode.
+    mem_limit: 400m
+    memswap_limit: 400m
+    cpus: '0.3'
+
+  prometheus:
+  # Prometheus scrapes metrics from cAdvisor and exposes them to Grafana
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./data-prometheus:/prometheus
+    depends_on:
+      - cadvisor
+    networks:
+      - airflow_network
+    mem_limit: 300m
+    memswap_limit: 300m
+    cpus: '0.3'
+
+
   dbt-docs:
+  # dbt-docs - generates AND serves dbt's docs site in one container
+    # - runs dbt deps && dbt docs generate, then python3 -m http.server 
+    # - see config/dbt-docs/entrypoint.sh 
+    # - Runs its own dbt CLI directly against Postgres rather than accessing the 
+    #   airflow-scheduler container using the host's Docker socket mounted in, 
+    #   which would hand over too much control over other containers on the host.
+    # - runs as non-root user
     build:
       context: ./config/dbt-docs
     container_name: dbt-docs

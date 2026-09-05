@@ -1,0 +1,212 @@
+{
+  "title": "Business Operations",
+  "uid": "iot-business-operations",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": {"from": "now-30d", "to": "now"},
+  "tags": ["iot-logistics", "business"],
+  "templating": {
+    "list": [
+      {
+        "name": "time_grain",
+        "type": "custom",
+        "query": "day,week,month,quarter,year",
+        "current": {"text": "month", "value": "month"},
+        "options": [
+          {"text": "day", "value": "day"},
+          {"text": "week", "value": "week"},
+          {"text": "month", "value": "month", "selected": true},
+          {"text": "quarter", "value": "quarter"},
+          {"text": "year", "value": "year"}
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total customers",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT count(*) FROM gold.dim_customer WHERE dbt_valid_to IS NULL", "refId": "A"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "% customers with open PO",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT round(100.0 * count(distinct fpo.customer_key) FILTER (WHERE fpo.status NOT IN ('delivered','closed','cancelled')) / nullif(count(distinct dc.customer_key),0), 1) AS pct_open FROM gold.dim_customer dc LEFT JOIN gold.fact_purchase_orders fpo ON fpo.customer_key = dc.customer_key WHERE dc.dbt_valid_to IS NULL",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "piechart",
+      "title": "Delivery fleet status",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT truck_status, count(*) AS trucks FROM silver.truck_current_position GROUP BY truck_status", "refId": "A"}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "PO created vs. delivered",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('$time_grain', d.date) AS time, count(*) AS orders_created FROM gold.fact_purchase_orders f JOIN gold.dim_datetime d ON d.date_key = f.order_date_key GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        },
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('$time_grain', s.delivery_time) AS time, count(*) AS orders_delivered FROM gold.fact_shipments s WHERE s.is_delivered GROUP BY 1 ORDER BY 1",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "PO status breakdown",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT status, count(*) AS orders FROM gold.fact_purchase_orders GROUP BY status ORDER BY orders DESC", "refId": "A"}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "barchart",
+      "title": "Sales by customer segment",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT fs.customer_segment, sum(fs.line_amount) AS revenue FROM gold.fact_sales fs JOIN gold.dim_datetime d ON d.date_key = fs.order_date_key WHERE date_trunc('$time_grain', d.date) = date_trunc('$time_grain', now()) GROUP BY fs.customer_segment ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "barchart",
+      "title": "Sales by region",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 14},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT fs.zone_city, sum(fs.line_amount) AS revenue FROM gold.fact_sales fs JOIN gold.dim_datetime d ON d.date_key = fs.order_date_key WHERE date_trunc('$time_grain', d.date) = date_trunc('$time_grain', now()) GROUP BY fs.zone_city ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "barchart",
+      "title": "Sales by product category",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 14},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT fs.category, sum(fs.line_amount) AS revenue FROM gold.fact_sales fs JOIN gold.dim_datetime d ON d.date_key = fs.order_date_key WHERE date_trunc('$time_grain', d.date) = date_trunc('$time_grain', now()) GROUP BY fs.category ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "barchart",
+      "title": "Invoice status breakdown",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT status, count(*) AS invoices, sum(amount) AS total_amount FROM gold.fact_invoices GROUP BY status", "refId": "A"}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Invoices settled by reminder count",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT payment_reminder, count(*) AS invoices, sum(amount) AS amount FROM gold.fact_invoices WHERE status = 'settled' GROUP BY payment_reminder ORDER BY payment_reminder", "refId": "A"}
+      ]
+    },
+    {
+      "id": 11,
+      "type": "barchart",
+      "title": "Invoice aging",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT CASE WHEN status = 'settled' THEN 'settled' WHEN status = 'cancelled' THEN 'cancelled' WHEN due_payment_date IS NULL THEN 'no due date' WHEN now() <= due_payment_date THEN 'not yet due' WHEN now() - due_payment_date <= interval '30 days' THEN '1-30 days overdue' WHEN now() - due_payment_date <= interval '60 days' THEN '31-60 days overdue' WHEN now() - due_payment_date <= interval '90 days' THEN '61-90 days overdue' ELSE '90+ days overdue' END AS aging_bucket, count(*) AS invoice_count, sum(amount) AS amount FROM gold.fact_invoices GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Orders at risk (in-transit, past target)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 30},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT f.purchase_order_id, f.truck_id, dz.city AS zone_city, po.target_delivery_date, now() - po.target_delivery_date AS overdue_by FROM gold.fact_purchase_orders f JOIN silver.purchase_orders_current po ON po.purchase_order_id = f.purchase_order_id LEFT JOIN gold.dim_delivery_zone dz ON dz.zone_id = f.zone_id WHERE f.status = 'in-transit' AND po.target_delivery_date < now() ORDER BY overdue_by DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Achieved vs. estimated delivery",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 38},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('$time_grain', d.date) AS time, avg(fdp.delay_days) AS avg_delay_days, avg(CASE WHEN fdp.is_on_time THEN 1 ELSE 0 END)*100 AS pct_on_time FROM gold.fact_delivery_performance fdp JOIN gold.dim_datetime d ON d.date_key = fdp.target_delivery_date_key GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Process time (creation to delivery)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 38},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "h"}, "overrides": []},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('$time_grain', d.date) AS time, avg(fdp.process_time_seconds)/3600.0 AS avg_process_hours FROM gold.fact_delivery_performance fdp JOIN gold.dim_datetime d ON d.date_key = fdp.order_date_key GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

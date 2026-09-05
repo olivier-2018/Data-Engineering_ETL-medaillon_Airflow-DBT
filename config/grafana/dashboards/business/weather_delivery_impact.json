@@ -1,0 +1,72 @@
+{
+  "title": "Weather & Delivery Impact",
+  "uid": "iot-weather-impact",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1h",
+  "time": {"from": "now-30d", "to": "now"},
+  "tags": ["iot-logistics", "business"],
+  "description": "Requires a real OPENWEATHERMAP_API_KEY in .env for weather_enrichment_dag to populate iot.weather_observations - panels render empty until then (see docs/OBSERVABILITY.md).",
+  "panels": [
+    {
+      "id": 1,
+      "type": "barchart",
+      "title": "Avg delivery time by weather condition",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "h"}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT weather_condition, avg(time_to_destination_seconds)/3600.0 AS avg_hours, count(*) AS deliveries FROM gold.fact_weather_delivery_correlation WHERE weather_condition IS NOT NULL GROUP BY weather_condition ORDER BY avg_hours DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "barchart",
+      "title": "Delivery delay by temperature range",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "h"}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT width_bucket(temperature, -10, 35, 9) AS temp_bucket, avg(time_to_destination_seconds)/3600.0 AS avg_hours, count(*) AS deliveries FROM gold.fact_weather_delivery_correlation WHERE temperature IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Worst weather-linked delays",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT purchase_order_id, zone_id, weather_condition, temperature, humidity, time_to_destination_seconds/3600.0 AS hours FROM gold.fact_weather_delivery_correlation WHERE weather_condition IS NOT NULL ORDER BY time_to_destination_seconds DESC LIMIT 20",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Deliveries by weather condition over time",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('day', delivery_time) AS time, weather_condition, count(*) AS deliveries FROM gold.fact_weather_delivery_correlation WHERE weather_condition IS NOT NULL GROUP BY 1,2 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "title": "Inventory & Restocking",
+  "uid": "iot-inventory-restocking",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "15m",
+  "time": {"from": "now-30d", "to": "now"},
+  "tags": ["iot-logistics", "business"],
+  "templating": {
+    "list": [
+      {
+        "name": "product",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "iot_postgres"},
+        "query": "SELECT name FROM gold.dim_product WHERE dbt_valid_to IS NULL ORDER BY name",
+        "refresh": 2,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Stock-level trend ($product)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT f.snapshot_date AS time, f.current_stock FROM gold.fact_inventory_snapshot f JOIN gold.dim_product p ON p.product_id = f.product_id WHERE p.name = '$product' AND p.dbt_valid_to IS NULL AND f.snapshot_date > current_date - 30 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Restock cadence (avg days between restocks)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "WITH restocks AS (SELECT product_id, changed_at, changed_at - LAG(changed_at) OVER (PARTITION BY product_id ORDER BY changed_at) AS gap FROM silver.inventory_history WHERE change_reason = 'restock') SELECT p.name, avg(extract(epoch FROM gap))/86400.0 AS avg_days_between_restocks, count(*) AS restock_events FROM restocks r JOIN gold.dim_product p ON p.product_id = r.product_id AND p.dbt_valid_to IS NULL WHERE gap IS NOT NULL GROUP BY p.name ORDER BY avg_days_between_restocks",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Top sellers vs. current stock (30d)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT p.name, sum(fs.qty_on_order) AS units_sold_30d, i.current_stock FROM gold.fact_sales fs JOIN gold.dim_product p ON p.product_key = fs.product_key JOIN gold.fact_inventory_snapshot i ON i.product_id = p.product_id AND i.snapshot_date = (SELECT max(snapshot_date) FROM gold.fact_inventory_snapshot) WHERE fs.updated_at > now() - interval '30 days' GROUP BY p.name, i.current_stock ORDER BY units_sold_30d DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Stockout events (total)",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT count(*) FROM silver.inventory_history WHERE current_stock = 0", "refId": "A"}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Recent stockout events",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 16},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT product_id, changed_at, current_stock FROM silver.inventory_history WHERE current_stock = 0 ORDER BY changed_at DESC LIMIT 20",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

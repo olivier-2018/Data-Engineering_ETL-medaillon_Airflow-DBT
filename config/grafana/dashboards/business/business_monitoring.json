@@ -1,0 +1,153 @@
+{
+  "title": "Business Monitoring",
+  "uid": "iot-business-monitoring",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5m",
+  "time": {"from": "now-1y", "to": "now"},
+  "tags": ["iot-logistics", "business"],
+  "templating": {
+    "list": [
+      {
+        "name": "time_grain",
+        "type": "custom",
+        "query": "month,quarter,year",
+        "current": {"text": "month", "value": "month"},
+        "options": [
+          {"text": "month", "value": "month", "selected": true},
+          {"text": "quarter", "value": "quarter"},
+          {"text": "year", "value": "year"}
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total customers",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT count(*) FROM gold.dim_customer WHERE dbt_valid_to IS NULL", "refId": "A"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "New customers (last 30 days)",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT count(*) FROM gold.dim_customer WHERE dbt_valid_to IS NULL AND created_at > now() - interval '30 days'", "refId": "A"}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "On-time delivery rate",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT round(100.0*avg(CASE WHEN is_on_time THEN 1 ELSE 0 END),1) AS pct_on_time FROM gold.fact_delivery_performance", "refId": "A"}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Avg delivery delay (days)",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {"format": "table", "rawSql": "SELECT round(avg(delay_days), 2) AS avg_delay_days FROM gold.fact_delivery_performance", "refId": "A"}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Customer growth trend",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('$time_grain', created_at) AS time, count(*) AS new_customers FROM gold.dim_customer WHERE dbt_valid_to IS NULL GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Process time stats (avg / p50 / p90, hours)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "fieldConfig": {"defaults": {"unit": "h"}, "overrides": []},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT avg(process_time_seconds)/3600.0 AS avg_hours, percentile_cont(0.5) WITHIN GROUP (ORDER BY process_time_seconds)/3600.0 AS p50_hours, percentile_cont(0.9) WITHIN GROUP (ORDER BY process_time_seconds)/3600.0 AS p90_hours FROM gold.fact_delivery_performance",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "barchart",
+      "title": "Sales by region (current period)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT fs.zone_city, sum(fs.line_amount) AS revenue FROM gold.fact_sales fs JOIN gold.dim_datetime d ON d.date_key = fs.order_date_key WHERE date_trunc('$time_grain', d.date) = date_trunc('$time_grain', now()) GROUP BY fs.zone_city ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "barchart",
+      "title": "Sales by product (current period)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT fs.category, sum(fs.line_amount) AS revenue FROM gold.fact_sales fs JOIN gold.dim_datetime d ON d.date_key = fs.order_date_key WHERE date_trunc('$time_grain', d.date) = date_trunc('$time_grain', now()) GROUP BY fs.category ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "barchart",
+      "title": "Revenue by delivery zone (last 24h)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT dz.city, sum(fpo.line_amount) AS revenue FROM gold.fact_product_on_orders fpo JOIN gold.fact_purchase_orders fo ON fo.purchase_order_id = fpo.purchase_order_id JOIN gold.dim_delivery_zone dz ON dz.zone_id = fo.zone_id WHERE fpo.updated_at > now() - interval '24 hours' GROUP BY dz.city ORDER BY revenue DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Products below restock threshold",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "datasource": {"type": "postgres", "uid": "iot_postgres"},
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT p.name, f.current_stock, f.nominal_capacity FROM gold.fact_inventory_snapshot f JOIN gold.dim_product p ON p.product_id = f.product_id AND p.dbt_valid_to IS NULL WHERE f.restock_required AND f.snapshot_date = (SELECT max(snapshot_date) FROM gold.fact_inventory_snapshot)",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
