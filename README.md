@@ -61,7 +61,7 @@ scripts/start.sh   # brings the stack up in dependency order
 Then, in a separate step (synthetic load is opt-in, not automatic):
 
 ```bash
-docker compose --profile generator up -d data-generator
+docker compose --profile generator up -d --build data-generator
 ```
 
 Full walkthrough, required `.env` values, and a verification checklist: [`docs/SETUP.md`](docs/SETUP.md).

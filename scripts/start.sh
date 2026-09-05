@@ -31,6 +31,16 @@ wait_healthy() {
 }
 
 echo "=== Stage 1: Kafka + Postgres (iot data) ==="
+# --build here also covers kafka-init (config/kafka/'s own Dockerfile):
+# kafka-init is never named directly anywhere in this script (only reached
+# transitively via kafka-ui's/data-generator's depends_on), and --build only
+# rebuilds the services EXPLICITLY named in its own command - a dependency
+# pulled in implicitly is not rebuilt just because the service that depends
+# on it was. Building it explicitly here, before it's needed, forces a
+# rebuild if config/kafka/ changed rather than silently running a stale
+# image (confirmed as the same bug class that let a data-generator fix sit
+# unbuilt for two days - see docs/SETUP.md).
+docker compose build kafka-init
 docker compose up -d --build kafka postgres
 wait_healthy kafka
 wait_healthy postgres
@@ -74,6 +84,7 @@ Airflow UI:         http://localhost:8090
 Spark Master UI:    http://localhost:8080
 Spark Worker 1 UI:  http://localhost:8081
 Spark Worker 2 UI:  http://localhost:8082
+Streaming job UI:   http://localhost:4040  (truck-position job's own SparkUI - up for as long as the job runs)
 dbt docs:           http://localhost:9000
 Grafana:            http://localhost:3000
 
@@ -81,8 +92,14 @@ To get Airflow credentials:
   docker compose exec airflow-api-server cat /opt/airflow/simple_auth_manager_passwords.json.generated
 
 To start generating synthetic data:
-  docker compose --profile generator up -d data-generator
+  docker compose --profile generator up -d --build data-generator
 
 To stop the generator only:
   docker compose stop data-generator
+
+To start per-container CPU/memory metrics (cAdvisor + Prometheus, feeds Grafana's
+"prometheus" datasource) - not started above, opt-in:
+  docker compose up -d cadvisor prometheus
+  cAdvisor:    http://localhost:8085
+  Prometheus:  http://localhost:9090
 EOF

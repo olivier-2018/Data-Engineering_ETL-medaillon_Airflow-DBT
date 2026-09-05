@@ -55,8 +55,15 @@ Prints the working UI URLs when done:
 Synthetic data generation is **not** started automatically — start it explicitly when you want load flowing:
 
 ```bash
-docker compose --profile generator up -d data-generator
+docker compose --profile generator up -d --build data-generator
 ```
+
+`--build` matters here specifically: unlike every other service in `scripts/start.sh`, this is the one command
+not already wired through `--build` by that script (since it's profile-gated, this is the *only* place it's
+started). Docker's build cache is content-hash based, not a naive mtime check, so `--build` is cheap when
+nothing changed — but without it, `docker compose up` won't even check whether `data_generators/` source has
+changed since the image was last built, silently running stale code indefinitely (confirmed: this is exactly
+what happened with a customer-address generation fix that sat unbuilt for two days).
 
 ### Logging into the Airflow UI
 
