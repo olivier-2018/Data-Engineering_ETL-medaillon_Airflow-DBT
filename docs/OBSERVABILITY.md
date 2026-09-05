@@ -55,20 +55,28 @@ stable or every dashboard panel will show "Data source not found" (this happened
 
 ### Provisioned dashboards (folders: `business` / `operations` / `backend`)
 
-Mid-rollout as of this writing (`TODO_grafana-dev.md` tracks the full plan) — currently provisioned:
+12 dashboards, organized by the business/operations/backend goals laid out in `TODO_grafana-dev.md` (now fully
+built out):
 
 | Folder | Dashboard | What it shows |
 |---|---|---|
+| `business` | **Business Operations** | Day-to-day detail: total customers, % with an open PO, PO created-vs-delivered trend, PO status breakdown, sales by segment/region/category (selectable time grain via `$time_grain`), invoice status/aging/reminder breakdown, delivery fleet status, orders at risk, achieved-vs-estimated delivery, process time. |
+| `business` | **Business Monitoring** | High-impact executive KPIs: customer count/growth trend, on-time delivery rate, avg delay, process-time percentiles (avg/p50/p90), sales by region/product at Y/Q/M grain — plus the two panels absorbed from the retired Gold KPIs dashboard (revenue by zone, restock threshold). |
+| `business` | **Weather & Delivery Impact** | Delivery time by weather condition/temperature bucket, worst weather-linked delays, deliveries-by-condition trend — surfaces `gold.fact_weather_delivery_correlation`. Renders empty until a real `OPENWEATHERMAP_API_KEY` is set in `.env` (`iot.weather_observations` has no rows without one). |
+| `business` | **Inventory & Restocking** | Stock-level trend per product (`$product` selector), restock cadence, top sellers vs. current stock, stockout events. |
+| `business` | **Executive Overview** | Single-pane summary — revenue today, orders in flight, on-time delivery %, pipeline lag status, open SLA breaches, error count — every panel reuses a query already verified in another dashboard. |
 | `operations` | **Live Truck Map** | A Geomap panel plotting `silver.truck_current_position` — the live view of where every truck currently is, color-coded by `truck_status`, on a fixed initial view (so zoom/pan survives the 10s auto-refresh). Below it, a table of trucks currently on a run (not `free`), with a live count of orders aboard each. |
+| `operations` | **Zone & Customer Delay Risk** | SLA breach count, live at-risk orders, zone throughput/average-delay (14d, filterable via a multi-select `$zone` variable), customers with recurring delays (≥3 delivered orders, ranked by % late). |
+| `operations` | **Fleet & Logistics Efficiency** | Fleet status mix, time spent in each `truck_status` over 24h (read from bronze `iot.truck_position_events` directly — silver only keeps current state), deliveries completed per truck, avg orders aboard per active run. |
 | `backend` | **Pipeline Health** | `control.silver_watermarks` lag per domain (how far behind each silver job is), error-row counts per domain over the last 15 minutes, and bronze ingestion volume over the last 6 hours. |
 | `backend` | **Backend Monitoring** | Bronze ingestion rate by domain, streaming data rate, Airflow DAG execution status (via the `airflow_postgres` datasource), per-container CPU/memory (selectable via a `$container` variable), Kafka offset freshness. |
 | `backend` | **Database Monitoring** | Postgres size/connections/cache-hit-ratio/dead-tuple health, Airflow metadata DB health, Postgres container CPU/memory, 30-day ingestion history, TimescaleDB hypertable inventory. |
 | `backend` | **Data Quality Trends** | Daily error-rate trend per domain, error rate as a % of ingestion volume, top rejection reason codes — the historical companion to Pipeline Health's point-in-time view. |
-| (General) | Gold KPIs | Still present pending retirement — its 3 panels (revenue by zone, on-time delivery, restock threshold) are being absorbed into a forthcoming `business/business_monitoring.json`. |
 
-`business` dashboards (customer/sales/delivery-performance views) and two more `operations`/`business` dashboards
-are still pending — see `TODO_grafana-dev.md` for the full plan. Every panel's query is verified directly
-against the live schema (not just checked for provisioning without error) whenever the underlying tables change.
+Every panel's query is verified directly against the live schema (not just checked for provisioning without
+error) whenever the underlying tables change. Three new gold dbt models back the delivery-performance/sales
+panels above — see [`docs/DBT_MODEL.md`](DBT_MODEL.md) for `fact_delivery_performance`, `fact_sales`, and
+`fact_purchase_order_status_duration`.
 
 ### Adding or editing a dashboard
 

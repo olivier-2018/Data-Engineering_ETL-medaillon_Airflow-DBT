@@ -65,13 +65,19 @@ chmod 777 data-airflow-logs data-kafka data-spark-logs data-spark-master \
 # container lifetime everything looks fine; only a recreate exposes it.
 # data-postgres/data-airflow-postgres are deliberately left at their mkdir -p
 # default (not world-writable) - those images DO self-heal correctly.
-# Recursive: a non-recursive chmod on ./dbt alone doesn't touch pre-existing
-# subdirectories/files from an earlier host-side `dbt` run (e.g. dbt/logs/,
-# dbt/target/) 
-chmod -R 777 dbt
+# Scoped to just the paths any container's dbt process actually WRITES to
+# (dbt/logs, dbt/dbt_packages, dbt/target - all gitignored/regenerated, so
+# mkdir -p first since they won't exist yet on a fresh clone). dbt/models,
+# dbt/snapshots, dbt/tests etc. are only ever read, never written, by dbt -
+# an earlier blanket `chmod -R 777 dbt` swept those up too for no functional
+# reason, and silently flipped every source .sql/.yml file's git-tracked
+# executable bit on every init.sh run (confirmed: produced a spurious
+# "modified" diff on any newly-added model file not yet committed at 755).
+mkdir -p dbt/logs dbt/dbt_packages dbt/target
+chmod -R 777 dbt/logs dbt/dbt_packages dbt/target
 
-if [ ! -w dbt ]; then
-    echo "WARNING: could not make ./dbt world-writable (owned by another user?)." >&2
+if [ ! -w dbt/logs ] || [ ! -w dbt/dbt_packages ] || [ ! -w dbt/target ]; then
+    echo "WARNING: could not make dbt/{logs,dbt_packages,target} world-writable (owned by another user?)." >&2
     echo "         dbt run/snapshot/test inside airflow-scheduler may fail with a" >&2
     echo "         PermissionError writing target/ or logs/ until this is fixed." >&2
 fi

@@ -134,11 +134,16 @@ detail (materializations, tests, business-question mapping) is in [`docs/DBT_MOD
 snapshots + a surrogate key), `dim_truck` (a real dimension sourced from `truck_fleet_snapshot`),
 `dim_delivery_zone` (view over all 40 reference zones, not just the currently-active subset).
 
-**Facts** (all `materialized: incremental`, `incremental_strategy: delete+insert`): `fact_purchase_orders`
+**Facts** (all `materialized: incremental`, `incremental_strategy: delete+insert` unless noted): `fact_purchase_orders`
 (header-level), `fact_product_on_orders` (line-item grain — order × product), `fact_invoices`,
 `fact_shipments` (dispatch/delivery timing computed directly from the **bronze** `iot.purchase_order_events`
 log, not silver — `silver.purchase_orders_current` only retains an order's latest status, not the
 `in-transit`/`delivered` transition timestamps needed for `time_to_destination_seconds`), `fact_inventory_snapshot`
 (periodic snapshot fact, one row per product per day, includes refill-price economics),
 `fact_weather_delivery_correlation` (joins weather at each delivery zone's nearest observation station against
-the order's actual delivery time).
+the order's actual delivery time), `fact_sales` (denormalized order×product mart pre-joined to
+customer/product/zone for the Grafana business dashboards — see [`docs/DBT_MODEL.md`](DBT_MODEL.md) for why its
+customer/product joins resolve through the natural key rather than the fact tables' own surrogate keys),
+`fact_delivery_performance` (one row per delivered order — process time, delay-vs-target, on-time flag),
+`fact_purchase_order_status_duration` (`materialized: view` — time spent in each PO status, read directly off
+`purchase_order_status_snapshot`'s SCD2 history).

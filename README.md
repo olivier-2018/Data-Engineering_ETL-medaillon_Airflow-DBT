@@ -83,9 +83,11 @@ Once `scripts/start.sh` finishes, these are the web UIs available:
 
 ### Grafana dashboards (folders: `business` / `operations` / `backend`)
 
-Dashboards are provisioned automatically — no manual import needed. See
-[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) for the current full list per folder; it grows as the
-Grafana dashboard rollout (`TODO_grafana-dev.md`) progresses.
+12 dashboards are provisioned automatically across the three folders — no manual import needed: 5 in
+`business` (Business Operations, Business Monitoring, Weather & Delivery Impact, Inventory & Restocking,
+Executive Overview), 3 in `operations` (Live Truck Map, Zone & Customer Delay Risk, Fleet & Logistics
+Efficiency), and 4 in `backend` (Pipeline Health, Backend Monitoring, Database Monitoring, Data Quality
+Trends). See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) for what each one shows.
 
 Every panel's query has been verified against real data (see [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)
 for exactly how). Grafana is also the way to browse **Loki** logs — Loki has no web UI of its own; use

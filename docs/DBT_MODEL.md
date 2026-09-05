@@ -138,7 +138,7 @@ that history at a coarser grain for no benefit.
 
 | Dimension | Built from | Materialization | Notes |
 |---|---|---|---|
-| `dim_customer` | `customer_snapshot` | view | surrogate key = `customer_id` + `dbt_valid_from` |
+| `dim_customer` | `customer_snapshot` | view | surrogate key = `customer_id` + `dbt_valid_from`; carries `created_at` (customer's true creation timestamp, invariant across SCD2 versions) for growth-trend panels |
 | `dim_product` | `product_snapshot` | view | same surrogate-key pattern |
 | `dim_truck` | `truck_fleet_snapshot` | table | a *real* dimension now (was degenerate pre-redesign) |
 | `dim_delivery_zone` | `stg_delivery_zones` | view | all 40 zones, not just currently-active ones - a fact
@@ -155,18 +155,24 @@ that history at a coarser grain for no benefit.
 | `fact_shipments` | one row per order (its dispatch→delivery leg) | sourced from **bronze** `iot.purchase_order_events` directly (see §6) for exact `in-transit`/`delivered` timestamps, joined to `stg_purchase_orders` for `truck_id`/`zone_id`; "orders per truck run" is a `GROUP BY truck_id` at query time, not a baked-in stop grain (see §6 for why) |
 | `fact_inventory_snapshot` | one row per (product × day) | periodic snapshot, includes refill-cost economics |
 | `fact_weather_delivery_correlation` | one row per delivered shipment | joins weather at the destination's nearest observation |
+| `fact_delivery_performance` | one row per delivered order | built for the Grafana dashboard rollout (`TODO_grafana-dev.md`): joins `fact_shipments` against `stg_purchase_orders`' raw `created_at`/`target_delivery_date` to compute `process_time_seconds` (creation→delivery), `delay_days` (delivery vs. target), and `is_on_time`. `customer_key` is resolved via `stg_purchase_orders.customer_id` against `dim_customer`'s *current* row, not copied from `fact_purchase_orders.customer_key` - that surrogate key goes stale the moment the customer's SCD2 dimension moves to a new version independently (see the fix in `fact_sales` below - the same failure mode, caught here proactively). |
+| `fact_sales` | one row per (order × product) | denormalized sales mart (also for the dashboard rollout): pre-joins `fact_product_on_orders` against `fact_purchase_orders`/`dim_product`/`dim_customer`/`dim_delivery_zone` so panels can slice by product/category/customer segment/region/time without repeating the join per query. `customer_key`/`product_key` are resolved through the stable natural key (`customer_id`/`product_id`), not compared directly against `fact_purchase_orders.customer_key`/`fact_product_on_orders.product_key` - an earlier version did that naively and silently lost `customer_segment`/`category` on ~75% of rows once SCD2 dimension churn had occurred since those fact rows were last refreshed. |
+| `fact_purchase_order_status_duration` | one row per status-transition (from `purchase_order_status_snapshot`) | `materialized: view`, not incremental - a thin read over the already-materialized SCD2 snapshot. `status_duration_seconds = coalesce(dbt_valid_to, now()) - dbt_valid_from`. |
 
 ## 5. Gold marts → business questions
 
-The four marts requested (see `TODO_improve_business_logic.md`) aren't separate models — they're just how you
-query the facts/dimensions above:
+Most business questions are still just how you query the facts/dimensions above - no dedicated mart needed. Two
+exceptions now exist (`fact_sales`, `fact_delivery_performance`, added for the Grafana dashboard rollout) because
+their join sets were reused heavily enough across multiple dashboard panels to be worth materializing once:
 
-- **Sales/profit**: `fact_invoices` (revenue) + `fact_product_on_orders` (revenue by product/category) +
-  `fact_inventory_snapshot`'s refill-cost data (cost side), grouped by `dim_customer`'s region + `dim_datetime`.
-- **Customer growth**: `dim_customer`/`customer_snapshot` history — new customers per period,
-  verified-vs-unverified funnel, disabled-account churn.
-- **Delivery ops**: `fact_shipments` + `dim_truck` + `dim_delivery_zone` — this is where consolidation
-  efficiency becomes visible (`avg_orders_per_truck_run`, `avg_distance_per_order`).
+- **Sales/profit**: `fact_sales` directly (pre-joined to customer segment/region/product category), or build it
+  yourself from `fact_invoices` + `fact_product_on_orders` + `fact_inventory_snapshot`'s refill-cost data if you
+  need a cut `fact_sales` doesn't already carry.
+- **Customer growth**: `dim_customer.created_at` (now exposed - see §4) grouped by any `dim_datetime` grain, or
+  the full `customer_snapshot` history for a verified-vs-unverified/disabled-account funnel.
+- **Delivery performance**: `fact_delivery_performance` directly for on-time %/process-time/delay-vs-target: or
+  `fact_shipments` + `dim_truck` + `dim_delivery_zone` for consolidation efficiency
+  (`avg_orders_per_truck_run`, `avg_distance_per_order`), which `fact_delivery_performance` doesn't cover.
 - **Outstanding invoices / cash-flow**: `fact_invoices` filtered to `pending`/`payment_reminder > 0`.
 
 ## 6. The one place dbt reads bronze directly

@@ -24,7 +24,7 @@ docker compose --profile generator --profile documentation down -v
 echo "Clearing ./data-* directories ..."
 rm -rf data-postgres data-airflow-postgres data-airflow-logs data-kafka \
        data-spark-logs data-spark-master data-spark-worker-1 data-spark-worker-2 \
-       data-spark-checkpoints data-grafana data-loki
+       data-spark-checkpoints data-grafana data-loki data-prometheus
 
 echo "Clearing dbt/dbt_packages, dbt/target, dbt/logs ..."
 # These are written from inside airflow-scheduler (uid 50000) and can end up
